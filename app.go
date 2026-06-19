@@ -170,6 +170,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
 			m.hosts.applyHosts(msg.resp)
+			// Refresh the VMs HOST column with the now-populated
+			// hosts cache so the resolved hostnames appear without
+			// waiting for the next ListVMs tick.
+			m.vms.refreshHostNames(m.hosts.hostnameByUUID)
 		}
 		return m, nil
 
@@ -187,7 +191,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vms.loading = false
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
-			m.vms.applyVMs(msg.resp)
+			m.vms.applyVMs(msg.resp, m.hosts.hostnameByUUID)
 		}
 		return m, nil
 
