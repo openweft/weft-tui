@@ -197,10 +197,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setMsg(fmt.Sprintf("%s %s ok", msg.action, msg.name))
 		}
-		// On a restart, the stop leg chains into the start leg.
-		if msg.err == nil && msg.restartPhase == "stop" {
-			return m, tea.Batch(loadVMsCmd(m.client), startVMCmd(m.client, msg.name, msg.project, ""))
-		}
 		return m, loadVMsCmd(m.client)
 
 	case vmLogsLoadedMsg:
@@ -320,7 +316,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			project := m.vms.confirmProject
 			m.vms.confirmStop = ""
 			m.vms.confirmProject = ""
-			return m, stopVMCmd(m.client, name, project, "")
+			return m, stopVMCmd(m.client, name, project)
 		case "n", "N", "esc", "ctrl+c":
 			m.vms.confirmStop = ""
 			m.vms.confirmProject = ""
@@ -504,7 +500,7 @@ func (m Model) handleVMsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 			m.setError("no VM selected")
 			return m, nil
 		}
-		return m, startVMCmd(m.client, name, project, "")
+		return m, startVMCmd(m.client, name, project)
 	case "S":
 		name, project := m.vms.selected()
 		if name == "" {
@@ -520,9 +516,11 @@ func (m Model) handleVMsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 			m.setError("no VM selected")
 			return m, nil
 		}
-		// Restart : kick stop ; the vmActionMsg handler chains the
-		// start leg when stop completes ok.
-		return m, stopVMCmd(m.client, name, project, "stop")
+		// Restart : single atomic RPC (weft-proto v0.12.0+). The
+		// agent rollbacks (restart on same host w/ same network)
+		// if the start leg fails — something the prior client-side
+		// stop+start chain couldn't offer.
+		return m, restartVMCmd(m.client, name, project)
 	case "l":
 		name, project := m.vms.selected()
 		if name == "" {

@@ -40,6 +40,8 @@ type fakeClient struct {
 	startErr    error
 	stopReq     *weftv1.StopVMRequest
 	stopErr     error
+	restartReq  *weftv1.RestartVMRequest
+	restartErr  error
 	logsReq     *weftv1.VMLogsRequest
 	logsResp    *weftv1.VMLogsResponse
 	logsErr     error
@@ -102,6 +104,13 @@ func (f *fakeClient) StopVM(_ context.Context, in *weftv1.StopVMRequest, _ ...gr
 	defer f.mu.Unlock()
 	f.stopReq = in
 	return &weftv1.StopVMResponse{}, f.stopErr
+}
+
+func (f *fakeClient) RestartVM(_ context.Context, in *weftv1.RestartVMRequest, _ ...grpc.CallOption) (*weftv1.RestartVMResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restartReq = in
+	return &weftv1.RestartVMResponse{}, f.restartErr
 }
 
 func (f *fakeClient) VMLogs(_ context.Context, in *weftv1.VMLogsRequest, _ ...grpc.CallOption) (*weftv1.VMLogsResponse, error) {
@@ -463,32 +472,25 @@ func TestRestartVMDispatch(t *testing.T) {
 
 	_, cmd := m.Update(upperKeyMsg('R'))
 	if cmd == nil {
-		t.Fatalf("'R' should produce a stop-then-start Cmd")
+		t.Fatalf("'R' should produce a RestartVM Cmd")
 	}
 	msg := cmd()
 	action, ok := msg.(vmActionMsg)
 	if !ok {
 		t.Fatalf("restart Cmd msg = %T, want vmActionMsg", msg)
 	}
-	if action.restartPhase != "stop" {
-		t.Errorf("first phase = %q, want stop", action.restartPhase)
+	if action.action != "restart" {
+		t.Errorf("action = %q, want restart (single atomic RPC)", action.action)
 	}
-	if c.stopReq == nil || c.stopReq.Name != "v-3" {
-		t.Errorf("StopVM req = %v, want Name=v-3", c.stopReq)
+	if c.restartReq == nil || c.restartReq.Name != "v-3" {
+		t.Errorf("RestartVM req = %v, want Name=v-3", c.restartReq)
 	}
-
-	// Feeding the stop-phase ack back into Update should schedule
-	// the start leg.
-	next, cmd := m.Update(action)
-	m = next.(Model)
-	_ = m // silence unused warning if assertions move
-	if cmd == nil {
-		t.Fatalf("post-stop ack should chain a start Cmd")
+	// Single-RPC restart : no stop / start legs should fire.
+	if c.stopReq != nil {
+		t.Errorf("StopVM should NOT fire on the atomic restart path ; got %+v", c.stopReq)
 	}
-	// Drain the batch — we expect StartVM to fire somewhere in it.
-	drainCmd(t, cmd)
-	if c.startReq == nil || c.startReq.Name != "v-3" {
-		t.Errorf("StartVM not fired after restart stop ack ; got %+v", c.startReq)
+	if c.startReq != nil {
+		t.Errorf("StartVM should NOT fire on the atomic restart path ; got %+v", c.startReq)
 	}
 }
 
