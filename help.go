@@ -15,7 +15,7 @@ type helpBinding struct {
 
 // globalBindings are always active, regardless of which tab is in
 // focus. Tab-specific bindings (cordon, remove, etc.) are listed in
-// tabBindings keyed by tab index.
+// the per-tab tables below.
 var globalBindings = []helpBinding{
 	{"1..4", "switch tab (Hosts / VMs / Projects / Events)"},
 	{"r", "refresh current tab"},
@@ -30,6 +30,42 @@ var hostsBindings = []helpBinding{
 	{"d", "set state → down (drain prep)"},
 	{"x", "remove host (asks for confirmation)"},
 	{"y / n", "confirm / cancel remove (when prompted)"},
+}
+
+var vmsBindings = []helpBinding{
+	{"↑/↓ or j/k", "move selection"},
+	{"s", "start selected VM"},
+	{"S", "stop selected VM (asks for confirmation)"},
+	{"R", "restart (stop → start, sequential)"},
+	{"l", "open serial log viewer (tail ~200 lines)"},
+	{"Esc", "close log viewer / cancel confirm modal"},
+}
+
+var projectsBindings = []helpBinding{
+	{"↑/↓ or j/k", "move selection"},
+	{"n", "create new project (opens inline form)"},
+	{"D", "delete project (asks for confirmation)"},
+	{"Enter / Esc", "submit / cancel (when prompted)"},
+}
+
+var eventsBindings = []helpBinding{
+	{"p", "pause / resume the live stream"},
+	{"c", "clear the buffer"},
+	{"j/k / arrows", "scroll up / down"},
+	{"PgUp / PgDn", "page up / down"},
+	{"g / G", "jump to top / bottom"},
+}
+
+// tabHelp is the per-tab help block in the order the help overlay
+// prints them. Title doubles as the section header.
+var tabHelp = []struct {
+	Title    string
+	Bindings []helpBinding
+}{
+	{"Hosts tab", hostsBindings},
+	{"VMs tab", vmsBindings},
+	{"Projects tab", projectsBindings},
+	{"Events tab", eventsBindings},
 }
 
 // helpView renders the overlay shown when the user toggles `?`. It is
@@ -48,15 +84,17 @@ func (t Theme) helpView(width int) string {
 		b.WriteString(kb.Desc)
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(t.StatusKey.Render("Hosts tab"))
-	b.WriteString("\n")
-	for _, kb := range hostsBindings {
-		b.WriteString("  ")
-		b.WriteString(t.StatusKey.Render(padKey(kb.Key)))
-		b.WriteString("  ")
-		b.WriteString(kb.Desc)
+	for _, section := range tabHelp {
 		b.WriteString("\n")
+		b.WriteString(t.StatusKey.Render(section.Title))
+		b.WriteString("\n")
+		for _, kb := range section.Bindings {
+			b.WriteString("  ")
+			b.WriteString(t.StatusKey.Render(padKey(kb.Key)))
+			b.WriteString("  ")
+			b.WriteString(kb.Desc)
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
 	b.WriteString(t.Faint.Render("press ? again to close"))
