@@ -405,7 +405,7 @@ func vmsModelWithSeed(t *testing.T, c *fakeClient, vm *weftv1.VMInfo) Model {
 	m := New(c)
 	next, _ := m.Update(keyMsg('2'))
 	m = next.(Model)
-	m.vms.applyVMs(c.listVMsResp)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.hostnameByUUID)
 	return m
 }
 
@@ -491,6 +491,38 @@ func TestRestartVMDispatch(t *testing.T) {
 	}
 	if c.startReq != nil {
 		t.Errorf("StartVM should NOT fire on the atomic restart path ; got %+v", c.startReq)
+	}
+}
+
+// TestVMsHostColumnResolvesHostname proves the v0.12.0 host_uuid
+// → hostname resolution path : when hosts arrive after VMs (the
+// common race on startup, both ListXxxs fire in parallel), the
+// VMs tab re-renders so the HOST column flips from short-UUID
+// to friendly hostname without a fresh ListVMs roundtrip.
+func TestVMsHostColumnResolvesHostname(t *testing.T) {
+	c := &fakeClient{
+		listVMsResp: &weftv1.ListVMsResponse{Vms: []*weftv1.VMInfo{
+			{Name: "v-1", Project: "p-1", HostUuid: "h-uuid-abcdef-1234"},
+		}},
+		listHostsResp: &weftv1.ListHostsResponse{Hosts: []*weftv1.HostInfo{
+			{Uuid: "h-uuid-abcdef-1234", Hostname: "dc1-r1-h1"},
+		}},
+	}
+	m := New(c)
+	next, _ := m.Update(keyMsg('2'))
+	m = next.(Model)
+
+	// VMs land first ; HOST column should fall back to short UUID.
+	m.vms.applyVMs(c.listVMsResp, m.hosts.hostnameByUUID)
+	if got := m.vms.rows[0].HostName; got != "" {
+		t.Errorf("HostName before hosts arrive = %q, want empty", got)
+	}
+
+	// Hosts arrive ; refresh re-resolves names.
+	m.hosts.applyHosts(c.listHostsResp)
+	m.vms.refreshHostNames(m.hosts.hostnameByUUID)
+	if got := m.vms.rows[0].HostName; got != "dc1-r1-h1" {
+		t.Errorf("HostName after hosts arrive = %q, want dc1-r1-h1", got)
 	}
 }
 

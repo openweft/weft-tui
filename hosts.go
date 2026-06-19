@@ -113,6 +113,19 @@ func (m *hostsModel) selectedHostname() string {
 	return m.rows[idx].Hostname
 }
 
+// hostnameByUUID returns the operator-visible hostname for a given
+// host UUID, "" if the UUID isn't in the current rows. Used by the
+// VMs tab to resolve VMInfo.host_uuid into a friendly column value
+// without a second ListHosts roundtrip.
+func (m *hostsModel) hostnameByUUID(uuid string) string {
+	for i := range m.rows {
+		if m.rows[i].UUID == uuid {
+			return m.rows[i].Hostname
+		}
+	}
+	return ""
+}
+
 // applyHosts refreshes the in-memory rows + the underlying table.
 // Called from the Bubble Tea Update handler when a hostsLoadedMsg
 // arrives.

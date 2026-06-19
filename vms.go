@@ -32,7 +32,8 @@ type vmRow struct {
 	Name     string
 	Project  string
 	UUID     string
-	HostUUID string
+	HostUUID string // raw VMInfo.host_uuid from the wire
+	HostName string // resolved via the hosts cache ; "" when unknown
 	State    string
 	Image    string
 	CPU      uint32
@@ -109,20 +110,51 @@ func (m *vmsModel) selected() (name, project string) {
 	return m.rows[idx].Name, m.rows[idx].Project
 }
 
+// refreshHostNames re-runs hostLookup over the current rows and
+// re-renders the table. Cheap : no proto allocation, no agent
+// roundtrip. Called when a hostsLoadedMsg lands after VMs were
+// already on screen — we want the HOST column to surface the
+// hostname immediately rather than waiting for the next ListVMs.
+func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) string) {
+	if hostLookup == nil || len(m.rows) == 0 {
+		return
+	}
+	tableRows := make([]table.Row, 0, len(m.rows))
+	changed := false
+	for i := range m.rows {
+		if m.rows[i].HostUUID != "" {
+			if name := hostLookup(m.rows[i].HostUUID); name != m.rows[i].HostName {
+				m.rows[i].HostName = name
+				changed = true
+			}
+		}
+		tableRows = append(tableRows, m.rows[i].tableRow(m.theme))
+	}
+	if changed {
+		m.table.SetRows(tableRows)
+	}
+}
+
 // applyVMs refreshes the table + in-memory rows from a ListVMs
-// response. Keeps the table-row formatting next to the state badge
-// logic so the colourisation stays consistent.
-func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse) {
+// response. The hostLookup callback resolves VMInfo.host_uuid into
+// a friendly hostname for the HOST column ; pass nil when the hosts
+// cache isn't populated yet (the column will fall back to a short
+// UUID, or the IP if the agent hasn't filled host_uuid).
+func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) string) {
 	rows := make([]vmRow, 0, len(resp.Vms))
 	tableRows := make([]table.Row, 0, len(resp.Vms))
 	for _, v := range resp.Vms {
 		state := vmStateString(v.State)
-		host := v.Ip // closest proxy : the VMInfo wire doesn't carry host_uuid
+		hostName := ""
+		if hostLookup != nil && v.HostUuid != "" {
+			hostName = hostLookup(v.HostUuid)
+		}
 		row := vmRow{
 			Name:     v.Name,
 			Project:  v.Project,
 			UUID:     v.Uuid,
-			HostUUID: host,
+			HostUUID: v.HostUuid,
+			HostName: hostName,
 			State:    state,
 			Image:    v.Image,
 			CPU:      v.Cpu,
@@ -151,7 +183,19 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 	case "error":
 		state = theme.BadgeBad.Render(state)
 	}
-	host := r.IP
+	// HOST column preference : hostname (operator-recognisable) →
+	// short host UUID (8 chars, cross-references the Hosts tab) →
+	// IP (legacy fallback for agents on weft-proto < v0.12.0).
+	host := r.HostName
+	if host == "" && r.HostUUID != "" {
+		host = r.HostUUID
+		if len(host) > 8 {
+			host = host[:8]
+		}
+	}
+	if host == "" {
+		host = r.IP
+	}
 	if host == "" {
 		host = "—"
 	}
