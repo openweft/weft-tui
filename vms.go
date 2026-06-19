@@ -21,6 +21,7 @@ type VMsClient interface {
 	ListVMs(ctx context.Context, in *weftv1.ListVMsRequest, opts ...grpc.CallOption) (*weftv1.ListVMsResponse, error)
 	StartVM(ctx context.Context, in *weftv1.StartVMRequest, opts ...grpc.CallOption) (*weftv1.StartVMResponse, error)
 	StopVM(ctx context.Context, in *weftv1.StopVMRequest, opts ...grpc.CallOption) (*weftv1.StopVMResponse, error)
+	RestartVM(ctx context.Context, in *weftv1.RestartVMRequest, opts ...grpc.CallOption) (*weftv1.RestartVMResponse, error)
 	VMLogs(ctx context.Context, in *weftv1.VMLogsRequest, opts ...grpc.CallOption) (*weftv1.VMLogsResponse, error)
 }
 
@@ -210,16 +211,13 @@ type vmsLoadedMsg struct {
 	err  error
 }
 
-// vmActionMsg is the result of a Start / Stop RPC ; the status bar
-// surfaces ok / err. `restartPhase` is non-empty when the action is
-// part of a sequential restart (`R` keypress) so the second leg can
-// chain off it.
+// vmActionMsg is the result of a Start / Stop / Restart RPC ; the
+// status bar surfaces ok / err.
 type vmActionMsg struct {
-	action       string
-	name         string
-	project      string
-	err          error
-	restartPhase string // "stop" → caller schedules start next ; empty otherwise
+	action  string
+	name    string
+	project string
+	err     error
 }
 
 // vmLogsLoadedMsg carries the result of a VMLogs fetch. tail is the
@@ -243,27 +241,44 @@ func loadVMsCmd(client VMsClient) tea.Cmd {
 	}
 }
 
-func startVMCmd(client VMsClient, name, project, restartPhase string) tea.Cmd {
+func startVMCmd(client VMsClient, name, project string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
-			return vmActionMsg{action: "start", name: name, project: project, err: errNoClient, restartPhase: restartPhase}
+			return vmActionMsg{action: "start", name: name, project: project, err: errNoClient}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, err := client.StartVM(ctx, &weftv1.StartVMRequest{Name: name, Project: project})
-		return vmActionMsg{action: "start", name: name, project: project, err: err, restartPhase: restartPhase}
+		return vmActionMsg{action: "start", name: name, project: project, err: err}
 	}
 }
 
-func stopVMCmd(client VMsClient, name, project, restartPhase string) tea.Cmd {
+func stopVMCmd(client VMsClient, name, project string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
-			return vmActionMsg{action: "stop", name: name, project: project, err: errNoClient, restartPhase: restartPhase}
+			return vmActionMsg{action: "stop", name: name, project: project, err: errNoClient}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, err := client.StopVM(ctx, &weftv1.StopVMRequest{Name: name, Project: project})
-		return vmActionMsg{action: "stop", name: name, project: project, err: err, restartPhase: restartPhase}
+		return vmActionMsg{action: "stop", name: name, project: project, err: err}
+	}
+}
+
+// restartVMCmd uses the atomic RestartVM RPC (weft-proto v0.12.0+)
+// instead of the sequential client-side StopVM → StartVM dance. The
+// agent rollbacks (restarts on the same host with the same network
+// attachments) when the start half fails — something the client-side
+// chain couldn't offer.
+func restartVMCmd(client VMsClient, name, project string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return vmActionMsg{action: "restart", name: name, project: project, err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := client.RestartVM(ctx, &weftv1.RestartVMRequest{Name: name, Project: project})
+		return vmActionMsg{action: "restart", name: name, project: project, err: err}
 	}
 }
 
