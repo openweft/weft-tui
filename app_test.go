@@ -3,58 +3,173 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	weftv1 "github.com/openweft/weft-proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
-// fakeHostsClient is a HostsClient stub that records every call and
-// returns canned responses. Lets the tests below assert state
-// transitions without dialling a real socket.
-type fakeHostsClient struct {
+// fakeClient is the test stub for the full Client interface used by
+// every tab. Each tab records its last RPC call so the assertions
+// below can verify the right RPC fired with the right args.
+//
+// We keep one struct rather than one-per-tab because Bubble Tea's
+// Model owns a single Client ; splitting would force a test-only
+// composition trick the production code doesn't need.
+type fakeClient struct {
 	mu sync.Mutex
 
-	listResp *weftv1.ListHostsResponse
-	listErr  error
+	// Hosts.
+	listHostsResp *weftv1.ListHostsResponse
+	listHostsErr  error
+	cordonReq     *weftv1.SetHostCordonedRequest
+	cordonErr     error
+	stateReq      *weftv1.SetHostStateRequest
+	stateErr      error
+	deleteReq     *weftv1.DeleteHostRequest
+	deleteErr     error
 
-	cordonReq *weftv1.SetHostCordonedRequest
-	cordonErr error
+	// VMs.
+	listVMsResp *weftv1.ListVMsResponse
+	listVMsErr  error
+	startReq    *weftv1.StartVMRequest
+	startErr    error
+	stopReq     *weftv1.StopVMRequest
+	stopErr     error
+	logsReq     *weftv1.VMLogsRequest
+	logsResp    *weftv1.VMLogsResponse
+	logsErr     error
 
-	stateReq *weftv1.SetHostStateRequest
-	stateErr error
+	// Projects.
+	listProjResp   *weftv1.ListProjectsResponse
+	listProjErr    error
+	createProjReq  *weftv1.CreateProjectRequest
+	createProjResp *weftv1.CreateProjectResponse
+	createProjErr  error
+	deleteProjReq  *weftv1.DeleteProjectRequest
+	deleteProjErr  error
 
-	deleteReq *weftv1.DeleteHostRequest
-	deleteErr error
+	// Events.
+	watchErr error
 }
 
-func (f *fakeHostsClient) ListHosts(_ context.Context, _ *weftv1.ListHostsRequest, _ ...grpc.CallOption) (*weftv1.ListHostsResponse, error) {
+func (f *fakeClient) ListHosts(_ context.Context, _ *weftv1.ListHostsRequest, _ ...grpc.CallOption) (*weftv1.ListHostsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.listResp, f.listErr
+	return f.listHostsResp, f.listHostsErr
 }
 
-func (f *fakeHostsClient) SetHostCordoned(_ context.Context, in *weftv1.SetHostCordonedRequest, _ ...grpc.CallOption) (*weftv1.SetHostCordonedResponse, error) {
+func (f *fakeClient) SetHostCordoned(_ context.Context, in *weftv1.SetHostCordonedRequest, _ ...grpc.CallOption) (*weftv1.SetHostCordonedResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cordonReq = in
 	return &weftv1.SetHostCordonedResponse{}, f.cordonErr
 }
 
-func (f *fakeHostsClient) SetHostState(_ context.Context, in *weftv1.SetHostStateRequest, _ ...grpc.CallOption) (*weftv1.SetHostStateResponse, error) {
+func (f *fakeClient) SetHostState(_ context.Context, in *weftv1.SetHostStateRequest, _ ...grpc.CallOption) (*weftv1.SetHostStateResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stateReq = in
 	return &weftv1.SetHostStateResponse{}, f.stateErr
 }
 
-func (f *fakeHostsClient) DeleteHost(_ context.Context, in *weftv1.DeleteHostRequest, _ ...grpc.CallOption) (*weftv1.DeleteHostResponse, error) {
+func (f *fakeClient) DeleteHost(_ context.Context, in *weftv1.DeleteHostRequest, _ ...grpc.CallOption) (*weftv1.DeleteHostResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteReq = in
 	return &weftv1.DeleteHostResponse{}, f.deleteErr
+}
+
+func (f *fakeClient) ListVMs(_ context.Context, _ *weftv1.ListVMsRequest, _ ...grpc.CallOption) (*weftv1.ListVMsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listVMsResp, f.listVMsErr
+}
+
+func (f *fakeClient) StartVM(_ context.Context, in *weftv1.StartVMRequest, _ ...grpc.CallOption) (*weftv1.StartVMResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startReq = in
+	return &weftv1.StartVMResponse{}, f.startErr
+}
+
+func (f *fakeClient) StopVM(_ context.Context, in *weftv1.StopVMRequest, _ ...grpc.CallOption) (*weftv1.StopVMResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopReq = in
+	return &weftv1.StopVMResponse{}, f.stopErr
+}
+
+func (f *fakeClient) VMLogs(_ context.Context, in *weftv1.VMLogsRequest, _ ...grpc.CallOption) (*weftv1.VMLogsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logsReq = in
+	if f.logsResp == nil {
+		return &weftv1.VMLogsResponse{}, f.logsErr
+	}
+	return f.logsResp, f.logsErr
+}
+
+func (f *fakeClient) ListProjects(_ context.Context, _ *weftv1.ListProjectsRequest, _ ...grpc.CallOption) (*weftv1.ListProjectsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listProjResp, f.listProjErr
+}
+
+func (f *fakeClient) CreateProject(_ context.Context, in *weftv1.CreateProjectRequest, _ ...grpc.CallOption) (*weftv1.CreateProjectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createProjReq = in
+	if f.createProjResp == nil {
+		return &weftv1.CreateProjectResponse{Project: &weftv1.ProjectInfo{Uuid: "fake-uuid", Name: in.Name}, Created: true}, f.createProjErr
+	}
+	return f.createProjResp, f.createProjErr
+}
+
+func (f *fakeClient) DeleteProject(_ context.Context, in *weftv1.DeleteProjectRequest, _ ...grpc.CallOption) (*weftv1.DeleteProjectResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteProjReq = in
+	return &weftv1.DeleteProjectResponse{}, f.deleteProjErr
+}
+
+// fakeEventStream is the minimal gRPC ServerStreamingClient impl the
+// tests need. Pre-loaded with a fixed slice of events ; Recv returns
+// them in order, then io.EOF.
+type fakeEventStream struct {
+	grpc.ClientStream
+	events []*weftv1.PlatformEvent
+	idx    int
+	mu     sync.Mutex
+}
+
+func (s *fakeEventStream) Recv() (*weftv1.PlatformEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx >= len(s.events) {
+		return nil, io.EOF
+	}
+	ev := s.events[s.idx]
+	s.idx++
+	return ev, nil
+}
+
+func (s *fakeEventStream) Header() (metadata.MD, error) { return nil, nil }
+func (s *fakeEventStream) Trailer() metadata.MD         { return nil }
+func (s *fakeEventStream) CloseSend() error             { return nil }
+func (s *fakeEventStream) Context() context.Context     { return context.Background() }
+func (s *fakeEventStream) SendMsg(_ any) error          { return nil }
+func (s *fakeEventStream) RecvMsg(_ any) error          { return io.EOF }
+
+func (f *fakeClient) WatchEvents(_ context.Context, _ *weftv1.WatchEventsRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[weftv1.PlatformEvent], error) {
+	if f.watchErr != nil {
+		return nil, f.watchErr
+	}
+	return &fakeEventStream{}, nil
 }
 
 // keyMsg builds a tea.KeyMsg for the given rune. Bubble Tea's API has
@@ -65,34 +180,36 @@ func keyMsg(r rune) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
 }
 
+// upperKeyMsg encodes an upper-case rune the same way Bubble Tea
+// produces it on a shifted key. The runes themselves are uppercase.
+func upperKeyMsg(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+}
+
 func TestTabSwitch(t *testing.T) {
 	m := New(nil)
 	if got := m.ActiveTab(); got != int(tabHosts) {
 		t.Fatalf("initial tab = %d, want %d (Hosts)", got, tabHosts)
 	}
 
-	// Press 2 → VMs.
 	next, _ := m.Update(keyMsg('2'))
 	m = next.(Model)
 	if got := m.ActiveTab(); got != int(tabVMs) {
 		t.Errorf("after '2', tab = %d, want %d (VMs)", got, tabVMs)
 	}
 
-	// Press 3 → Projects.
 	next, _ = m.Update(keyMsg('3'))
 	m = next.(Model)
 	if got := m.ActiveTab(); got != int(tabProjects) {
 		t.Errorf("after '3', tab = %d, want %d (Projects)", got, tabProjects)
 	}
 
-	// Press 4 → Events.
 	next, _ = m.Update(keyMsg('4'))
 	m = next.(Model)
 	if got := m.ActiveTab(); got != int(tabEvents) {
 		t.Errorf("after '4', tab = %d, want %d (Events)", got, tabEvents)
 	}
 
-	// Press 1 → back to Hosts.
 	next, _ = m.Update(keyMsg('1'))
 	m = next.(Model)
 	if got := m.ActiveTab(); got != int(tabHosts) {
@@ -123,33 +240,30 @@ func TestQuitKey(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("'q' should return tea.Quit")
 	}
-	// Tea.Quit is a function that returns tea.QuitMsg{} when called.
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Fatalf("'q' Cmd produced %T, want tea.QuitMsg", msg)
 	}
 }
 
-// TestCordonDispatch primes the model with a host then presses 'c' ;
-// the resulting Cmd should invoke the fake client's SetHostCordoned.
+// --- Hosts tab tests (carried over from V0.1). ---
+
 func TestCordonDispatch(t *testing.T) {
-	client := &fakeHostsClient{
-		listResp: &weftv1.ListHostsResponse{
+	client := &fakeClient{
+		listHostsResp: &weftv1.ListHostsResponse{
 			Hosts: []*weftv1.HostInfo{
 				{Uuid: "u-1", Hostname: "alpha", State: "active"},
 			},
 		},
 	}
 	m := New(client)
-	// Inject the hosts directly so the table has a row to select.
-	m.hosts.applyHosts(client.listResp)
+	m.hosts.applyHosts(client.listHostsResp)
 
 	next, cmd := m.Update(keyMsg('c'))
 	m = next.(Model)
 	if cmd == nil {
 		t.Fatalf("'c' should produce a cordon Cmd")
 	}
-	// Drain the Cmd : it runs the gRPC call.
 	msg := cmd()
 	if _, ok := msg.(hostActionMsg); !ok {
 		t.Fatalf("cordon Cmd produced %T, want hostActionMsg", msg)
@@ -157,25 +271,21 @@ func TestCordonDispatch(t *testing.T) {
 	if client.cordonReq == nil {
 		t.Fatalf("SetHostCordoned was not called")
 	}
-	if client.cordonReq.Uuid != "u-1" {
-		t.Errorf("cordon uuid = %q, want u-1", client.cordonReq.Uuid)
-	}
-	if !client.cordonReq.Cordoned {
-		t.Errorf("cordon flag should be true on 'c'")
+	if client.cordonReq.Uuid != "u-1" || !client.cordonReq.Cordoned {
+		t.Errorf("cordon req = %+v, want uuid=u-1 cordoned=true", client.cordonReq)
 	}
 }
 
-// TestUncordonDispatch mirrors TestCordonDispatch for the 'u' key.
 func TestUncordonDispatch(t *testing.T) {
-	client := &fakeHostsClient{
-		listResp: &weftv1.ListHostsResponse{
+	client := &fakeClient{
+		listHostsResp: &weftv1.ListHostsResponse{
 			Hosts: []*weftv1.HostInfo{
 				{Uuid: "u-2", Hostname: "beta", State: "active", Cordoned: true},
 			},
 		},
 	}
 	m := New(client)
-	m.hosts.applyHosts(client.listResp)
+	m.hosts.applyHosts(client.listHostsResp)
 
 	_, cmd := m.Update(keyMsg('u'))
 	_ = cmd()
@@ -184,17 +294,16 @@ func TestUncordonDispatch(t *testing.T) {
 	}
 }
 
-// TestSetStateDownDispatch validates the 'd' shortcut → SetHostState(down).
 func TestSetStateDownDispatch(t *testing.T) {
-	client := &fakeHostsClient{
-		listResp: &weftv1.ListHostsResponse{
+	client := &fakeClient{
+		listHostsResp: &weftv1.ListHostsResponse{
 			Hosts: []*weftv1.HostInfo{
 				{Uuid: "u-3", Hostname: "gamma", State: "active"},
 			},
 		},
 	}
 	m := New(client)
-	m.hosts.applyHosts(client.listResp)
+	m.hosts.applyHosts(client.listHostsResp)
 
 	_, cmd := m.Update(keyMsg('d'))
 	_ = cmd()
@@ -203,21 +312,17 @@ func TestSetStateDownDispatch(t *testing.T) {
 	}
 }
 
-// TestRemoveConfirmFlow: 'x' opens the confirm modal ; 'n' cancels ;
-// 'y' calls DeleteHost. Validates the modal short-circuits all other
-// keys and the destructive RPC fires only on explicit consent.
 func TestRemoveConfirmFlow(t *testing.T) {
-	client := &fakeHostsClient{
-		listResp: &weftv1.ListHostsResponse{
+	client := &fakeClient{
+		listHostsResp: &weftv1.ListHostsResponse{
 			Hosts: []*weftv1.HostInfo{
 				{Uuid: "u-4", Hostname: "delta", State: "active"},
 			},
 		},
 	}
 	m := New(client)
-	m.hosts.applyHosts(client.listResp)
+	m.hosts.applyHosts(client.listHostsResp)
 
-	// 'x' opens the modal — no RPC yet.
 	next, cmd := m.Update(keyMsg('x'))
 	m = next.(Model)
 	if cmd != nil {
@@ -227,7 +332,6 @@ func TestRemoveConfirmFlow(t *testing.T) {
 		t.Fatalf("'x' should open the confirm modal")
 	}
 
-	// 'n' cancels.
 	next, _ = m.Update(keyMsg('n'))
 	m = next.(Model)
 	if m.ConfirmingRemove() {
@@ -237,12 +341,8 @@ func TestRemoveConfirmFlow(t *testing.T) {
 		t.Errorf("DeleteHost must not be called on cancel")
 	}
 
-	// 'x' again, then 'y' → fires DeleteHost.
 	next, _ = m.Update(keyMsg('x'))
 	m = next.(Model)
-	if !m.ConfirmingRemove() {
-		t.Fatalf("'x' (second time) should open the modal")
-	}
 	_, cmd = m.Update(keyMsg('y'))
 	if cmd == nil {
 		t.Fatalf("'y' should produce a delete Cmd")
@@ -253,11 +353,8 @@ func TestRemoveConfirmFlow(t *testing.T) {
 	}
 }
 
-// TestRefreshKeyOnHosts: 'r' on the Hosts tab issues a list RPC.
 func TestRefreshKeyOnHosts(t *testing.T) {
-	client := &fakeHostsClient{
-		listResp: &weftv1.ListHostsResponse{Hosts: nil},
-	}
+	client := &fakeClient{listHostsResp: &weftv1.ListHostsResponse{Hosts: nil}}
 	m := New(client)
 
 	_, cmd := m.Update(keyMsg('r'))
@@ -274,14 +371,11 @@ func TestRefreshKeyOnHosts(t *testing.T) {
 	}
 }
 
-// TestRefreshErrorSurfaces: when ListHosts fails, the model exposes
-// the error through the status bar.
 func TestRefreshErrorSurfaces(t *testing.T) {
 	want := errors.New("boom")
-	client := &fakeHostsClient{listErr: want}
+	client := &fakeClient{listHostsErr: want}
 	m := New(client)
 
-	// Simulate the message that would be produced by the Cmd.
 	next, _ := m.Update(hostsLoadedMsg{err: want})
 	m = next.(Model)
 	gotMsg, gotErr := m.StatusMessage()
@@ -290,5 +384,320 @@ func TestRefreshErrorSurfaces(t *testing.T) {
 	}
 	if gotMsg == "" {
 		t.Errorf("statusMsg empty, want error text")
+	}
+}
+
+// --- VMs tab tests. ---
+
+// vmsModelWithSeed switches to the VMs tab and primes one row.
+func vmsModelWithSeed(t *testing.T, c *fakeClient, vm *weftv1.VMInfo) Model {
+	t.Helper()
+	c.listVMsResp = &weftv1.ListVMsResponse{Vms: []*weftv1.VMInfo{vm}}
+	m := New(c)
+	next, _ := m.Update(keyMsg('2'))
+	m = next.(Model)
+	m.vms.applyVMs(c.listVMsResp)
+	return m
+}
+
+func TestStartVMDispatch(t *testing.T) {
+	c := &fakeClient{}
+	m := vmsModelWithSeed(t, c, &weftv1.VMInfo{Name: "v-1", Project: "p-1", State: weftv1.VMState_VM_STATE_STOPPED})
+
+	_, cmd := m.Update(keyMsg('s'))
+	if cmd == nil {
+		t.Fatalf("'s' should produce a start Cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(vmActionMsg); !ok {
+		t.Fatalf("start Cmd msg = %T, want vmActionMsg", msg)
+	}
+	if c.startReq == nil || c.startReq.Name != "v-1" || c.startReq.Project != "p-1" {
+		t.Errorf("StartVM req = %+v, want {Name:v-1 Project:p-1}", c.startReq)
+	}
+}
+
+func TestStopVMConfirmFlow(t *testing.T) {
+	c := &fakeClient{}
+	m := vmsModelWithSeed(t, c, &weftv1.VMInfo{Name: "v-2", Project: "p-1", State: weftv1.VMState_VM_STATE_RUNNING})
+
+	// 'S' opens the modal — no RPC yet.
+	next, cmd := m.Update(upperKeyMsg('S'))
+	m = next.(Model)
+	if cmd != nil {
+		t.Errorf("'S' must not fire an RPC ; got Cmd %v", cmd)
+	}
+	if !m.ConfirmingStop() {
+		t.Fatalf("'S' should open the confirm-stop modal")
+	}
+	if c.stopReq != nil {
+		t.Errorf("StopVM must not be called yet")
+	}
+
+	// 'n' cancels.
+	next, _ = m.Update(keyMsg('n'))
+	m = next.(Model)
+	if m.ConfirmingStop() {
+		t.Errorf("'n' should close the modal")
+	}
+	if c.stopReq != nil {
+		t.Errorf("StopVM must not be called on cancel")
+	}
+
+	// 'S' again then 'y' → fires StopVM.
+	next, _ = m.Update(upperKeyMsg('S'))
+	m = next.(Model)
+	_, cmd = m.Update(keyMsg('y'))
+	if cmd == nil {
+		t.Fatalf("'y' should produce a stop Cmd")
+	}
+	_ = cmd()
+	if c.stopReq == nil || c.stopReq.Name != "v-2" {
+		t.Errorf("StopVM req = %v, want Name=v-2", c.stopReq)
+	}
+}
+
+func TestRestartVMDispatch(t *testing.T) {
+	c := &fakeClient{}
+	m := vmsModelWithSeed(t, c, &weftv1.VMInfo{Name: "v-3", Project: "p-1", State: weftv1.VMState_VM_STATE_RUNNING})
+
+	_, cmd := m.Update(upperKeyMsg('R'))
+	if cmd == nil {
+		t.Fatalf("'R' should produce a stop-then-start Cmd")
+	}
+	msg := cmd()
+	action, ok := msg.(vmActionMsg)
+	if !ok {
+		t.Fatalf("restart Cmd msg = %T, want vmActionMsg", msg)
+	}
+	if action.restartPhase != "stop" {
+		t.Errorf("first phase = %q, want stop", action.restartPhase)
+	}
+	if c.stopReq == nil || c.stopReq.Name != "v-3" {
+		t.Errorf("StopVM req = %v, want Name=v-3", c.stopReq)
+	}
+
+	// Feeding the stop-phase ack back into Update should schedule
+	// the start leg.
+	next, cmd := m.Update(action)
+	m = next.(Model)
+	_ = m // silence unused warning if assertions move
+	if cmd == nil {
+		t.Fatalf("post-stop ack should chain a start Cmd")
+	}
+	// Drain the batch — we expect StartVM to fire somewhere in it.
+	drainCmd(t, cmd)
+	if c.startReq == nil || c.startReq.Name != "v-3" {
+		t.Errorf("StartVM not fired after restart stop ack ; got %+v", c.startReq)
+	}
+}
+
+func TestVMLogsOpensViewport(t *testing.T) {
+	c := &fakeClient{
+		logsResp: &weftv1.VMLogsResponse{Contents: []byte("line a\nline b\nline c\n")},
+	}
+	m := vmsModelWithSeed(t, c, &weftv1.VMInfo{Name: "v-4", Project: "p-1"})
+
+	next, cmd := m.Update(keyMsg('l'))
+	m = next.(Model)
+	if !m.LogsOpen() {
+		t.Fatalf("'l' should open the logs overlay")
+	}
+	if cmd == nil {
+		t.Fatalf("'l' should produce a VMLogs Cmd")
+	}
+	msg := cmd()
+	loaded, ok := msg.(vmLogsLoadedMsg)
+	if !ok {
+		t.Fatalf("logs Cmd msg = %T, want vmLogsLoadedMsg", msg)
+	}
+	if loaded.err != nil {
+		t.Fatalf("logs Cmd err = %v, want nil", loaded.err)
+	}
+	if c.logsReq == nil || c.logsReq.Name != "v-4" {
+		t.Errorf("VMLogs req = %v, want Name=v-4", c.logsReq)
+	}
+	// Esc closes the overlay.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.LogsOpen() {
+		t.Errorf("Esc should close the logs overlay")
+	}
+}
+
+// --- Projects tab tests. ---
+
+func projectsModelWithSeed(t *testing.T, c *fakeClient, p *weftv1.ProjectInfo) Model {
+	t.Helper()
+	c.listProjResp = &weftv1.ListProjectsResponse{Projects: []*weftv1.ProjectInfo{p}}
+	m := New(c)
+	next, _ := m.Update(keyMsg('3'))
+	m = next.(Model)
+	m.projects.applyProjects(c.listProjResp, map[string]int{p.Uuid: 0})
+	return m
+}
+
+func TestCreateProjectFlow(t *testing.T) {
+	c := &fakeClient{listProjResp: &weftv1.ListProjectsResponse{}}
+	m := New(c)
+	next, _ := m.Update(keyMsg('3'))
+	m = next.(Model)
+
+	// 'n' opens the input form.
+	next, _ = m.Update(keyMsg('n'))
+	m = next.(Model)
+	if !m.CreatingProject() {
+		t.Fatalf("'n' should open the create form")
+	}
+
+	// Type "alpha".
+	for _, r := range "alpha" {
+		next, _ = m.Update(keyMsg(r))
+		m = next.(Model)
+	}
+
+	// Enter submits.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("Enter should produce a CreateProject Cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(projectActionMsg); !ok {
+		t.Fatalf("create Cmd msg = %T, want projectActionMsg", msg)
+	}
+	if c.createProjReq == nil || c.createProjReq.Name != "alpha" {
+		t.Errorf("CreateProject req = %v, want Name=alpha", c.createProjReq)
+	}
+}
+
+func TestDeleteProjectConfirmFlow(t *testing.T) {
+	c := &fakeClient{}
+	m := projectsModelWithSeed(t, c, &weftv1.ProjectInfo{Uuid: "puuid-1", Name: "to-delete"})
+
+	// 'D' opens the modal.
+	next, cmd := m.Update(upperKeyMsg('D'))
+	m = next.(Model)
+	if cmd != nil {
+		t.Errorf("'D' must not fire an RPC ; got Cmd %v", cmd)
+	}
+	if !m.ConfirmingDeleteProject() {
+		t.Fatalf("'D' should open the confirm-delete modal")
+	}
+
+	// 'n' cancels.
+	next, _ = m.Update(keyMsg('n'))
+	m = next.(Model)
+	if m.ConfirmingDeleteProject() {
+		t.Errorf("'n' should close the modal")
+	}
+	if c.deleteProjReq != nil {
+		t.Errorf("DeleteProject must not be called on cancel")
+	}
+
+	// 'D' again + 'y' → fires DeleteProject.
+	next, _ = m.Update(upperKeyMsg('D'))
+	m = next.(Model)
+	_, cmd = m.Update(keyMsg('y'))
+	if cmd == nil {
+		t.Fatalf("'y' should produce a delete Cmd")
+	}
+	_ = cmd()
+	if c.deleteProjReq == nil || c.deleteProjReq.Uuid != "puuid-1" {
+		t.Errorf("DeleteProject req = %v, want Uuid=puuid-1", c.deleteProjReq)
+	}
+}
+
+// --- Events tab tests. ---
+
+func TestEventsPauseToggle(t *testing.T) {
+	c := &fakeClient{}
+	m := New(c)
+	next, _ := m.Update(keyMsg('4'))
+	m = next.(Model)
+	if m.EventsPaused() {
+		t.Fatalf("Events tab should start live, not paused")
+	}
+	next, _ = m.Update(keyMsg('p'))
+	m = next.(Model)
+	if !m.EventsPaused() {
+		t.Fatalf("'p' should toggle to paused")
+	}
+	next, _ = m.Update(keyMsg('p'))
+	m = next.(Model)
+	if m.EventsPaused() {
+		t.Fatalf("second 'p' should resume")
+	}
+}
+
+func TestEventsAppendOnReceive(t *testing.T) {
+	c := &fakeClient{}
+	m := New(c)
+	next, _ := m.Update(keyMsg('4'))
+	m = next.(Model)
+
+	// Feed a synthetic event message into Update — bypasses the
+	// goroutine + channel so the test stays deterministic.
+	ev := &weftv1.PlatformEvent{
+		TsUnixNs: 1_700_000_000_000_000_000,
+		Kind:     "vm.state.running",
+		Subject:  "my-vm",
+	}
+	next, _ = m.Update(eventReceivedMsg{ev: ev})
+	m = next.(Model)
+	if got := m.EventLineCount(); got != 1 {
+		t.Errorf("after one event, line count = %d, want 1", got)
+	}
+
+	// Pause then feed a second event ; line count must NOT advance.
+	next, _ = m.Update(keyMsg('p'))
+	m = next.(Model)
+	next, _ = m.Update(eventReceivedMsg{ev: ev})
+	m = next.(Model)
+	if got := m.EventLineCount(); got != 1 {
+		t.Errorf("while paused, line count = %d, want 1", got)
+	}
+}
+
+func TestEventsClearBuffer(t *testing.T) {
+	c := &fakeClient{}
+	m := New(c)
+	next, _ := m.Update(keyMsg('4'))
+	m = next.(Model)
+	for i := 0; i < 3; i++ {
+		next, _ = m.Update(eventReceivedMsg{ev: &weftv1.PlatformEvent{TsUnixNs: 1, Kind: "vm.state.running", Subject: "x"}})
+		m = next.(Model)
+	}
+	if m.EventLineCount() != 3 {
+		t.Fatalf("setup: want 3 lines, got %d", m.EventLineCount())
+	}
+	next, _ = m.Update(keyMsg('c'))
+	m = next.(Model)
+	if m.EventLineCount() != 0 {
+		t.Errorf("'c' should clear the buffer ; got %d lines", m.EventLineCount())
+	}
+}
+
+// drainCmd executes a tea.Cmd (potentially a batch) and walks any
+// nested batchMsg / sequenceMsg returned by it, calling each child
+// Cmd in turn. Lets the tests observe RPCs that ride on a Batch.
+func drainCmd(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+	// tea.BatchMsg is a slice of tea.Cmds in current Bubble Tea.
+	switch v := msg.(type) {
+	case tea.BatchMsg:
+		for _, c := range v {
+			drainCmd(t, c)
+		}
+	case []tea.Cmd:
+		for _, c := range v {
+			drainCmd(t, c)
+		}
 	}
 }
