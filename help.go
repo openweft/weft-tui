@@ -26,8 +26,9 @@ var globalBindings = []helpBinding{
 
 var paletteBindings = []helpBinding{
 	{"Tab", "complete to the best-match resource id"},
-	{"Enter", "switch to the typed resource"},
+	{"Enter (palette)", "switch to the typed resource"},
 	{"Esc", "cancel"},
+	{"Enter (table row)", "open the detail drawer (every field of the row)"},
 	{"d", "delete selected row (asks for confirmation)"},
 }
 

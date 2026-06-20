@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,20 +55,28 @@ type ResourceAction struct {
 // ResourceListModel is the generic Bubble Tea model that backs every
 // resource-listing view registered in the catalogue.
 type ResourceListModel struct {
-	theme    Theme
-	client   weftv1.WeftAgentClient
-	cfg      ResourceConfig
-	table    table.Model
-	rows     []map[string]any
-	loading  bool
-	err      error
-	refresh  time.Time
+	theme   Theme
+	client  weftv1.WeftAgentClient
+	cfg     ResourceConfig
+	table   table.Model
+	rows    []map[string]any
+	loading bool
+	err     error
+	refresh time.Time
 
 	// confirmAction is the pending action when its Confirm field is
 	// non-empty ; renders a one-line prompt the operator types into.
 	confirmAction string
 	confirmInput  string
 	confirmRow    map[string]any
+
+	// detailOpen + detailRow drive the inspector drawer that pops up
+	// on `Enter`. The drawer renders every key/value of the selected
+	// row in a sorted table — same level of detail the bespoke
+	// Hosts + VMs drawers expose, but generic across the 21 palette
+	// resources.
+	detailOpen bool
+	detailRow  map[string]any
 }
 
 // newResourceListModel builds a fresh model for a registered resource.
@@ -164,6 +173,18 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Detail drawer open : Esc/q closes, everything else is a
+		// no-op so the drawer doesn't accidentally consume action
+		// keys meant for the underlying table.
+		if m.detailOpen {
+			switch msg.String() {
+			case "esc", "q":
+				m.detailOpen = false
+				m.detailRow = nil
+			}
+			return m, nil
+		}
+
 		// In confirmation mode : type the confirmation string then
 		// Enter fires the action. Esc cancels.
 		if m.confirmAction != "" {
@@ -215,10 +236,19 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 			}
 		}
 
-		// Normal mode : action keys + r for refresh + table nav.
+		// Normal mode : action keys + r for refresh + Enter for the
+		// detail drawer + table nav.
 		key := msg.String()
 		if key == "r" {
 			return m, m.loadCmd()
+		}
+		if key == "enter" {
+			row := m.selected()
+			if row != nil {
+				m.detailOpen = true
+				m.detailRow = row
+			}
+			return m, nil
 		}
 		for _, a := range m.cfg.Actions {
 			if a.Key == key {
@@ -261,7 +291,8 @@ func (m *ResourceListModel) confirmActionExpected() string {
 	return ""
 }
 
-// View renders the header + table + confirmation prompt (when active).
+// View renders the header + table + confirmation prompt or drawer
+// overlay (when active).
 func (m *ResourceListModel) View(width int) string {
 	var b strings.Builder
 	b.WriteString(m.theme.Title.Render(m.cfg.Title))
@@ -274,6 +305,10 @@ func (m *ResourceListModel) View(width int) string {
 		b.WriteString(m.theme.BadgeBad.Render("error: " + m.err.Error()))
 		return b.String()
 	}
+	if m.detailOpen {
+		b.WriteString(m.renderDetail(width))
+		return b.String()
+	}
 	b.WriteString(m.table.View())
 	if m.confirmAction != "" {
 		b.WriteString("\n\n")
@@ -283,6 +318,50 @@ func (m *ResourceListModel) View(width int) string {
 		b.WriteString(m.theme.Title.Render(m.confirmInput + "_"))
 	}
 	return b.String()
+}
+
+// renderDetail draws the inspector drawer : every key/value of the
+// selected row in a deterministic order. Keys are sorted alphabetically
+// for stable diffing across refreshes (operators can mentally
+// pin-point what changed without the table re-arranging itself).
+func (m *ResourceListModel) renderDetail(width int) string {
+	if m.detailRow == nil {
+		return m.theme.Faint.Render("(no row selected)")
+	}
+	keys := make([]string, 0, len(m.detailRow))
+	for k := range m.detailRow {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(m.theme.Title.Render(m.cfg.Title + " — detail"))
+	b.WriteString("\n\n")
+	// Render as a two-column "key  value" layout. Column widths are
+	// derived from the longest key in the row so values line up.
+	maxKey := 0
+	for _, k := range keys {
+		if len(k) > maxKey {
+			maxKey = len(k)
+		}
+	}
+	for _, k := range keys {
+		v := m.detailRow[k]
+		b.WriteString(m.theme.StatusKey.Render(padRight(k, maxKey)))
+		b.WriteString("  ")
+		b.WriteString(m.theme.StatusVal.Render(fmt.Sprintf("%v", v)))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Faint.Render("press Esc or q to close"))
+	return b.String()
+}
+
+// padRight right-pads s with spaces to width n. No-op when len(s) >= n.
+func padRight(s string, n int) string {
+	if len(s) >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-len(s))
 }
 
 // Actions returns the help footer entries for this resource.
