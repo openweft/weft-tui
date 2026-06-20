@@ -882,3 +882,100 @@ func TestResource_DetailDrawerSwallowsActionKeys(t *testing.T) {
 		t.Errorf("`d` should not fire the action while drawer is open")
 	}
 }
+
+// TestResource_NewOpensCreateForm : `n` on a resource that has a
+// CreateFn opens the form ; on one without, it's a no-op.
+func TestResource_NewOpensCreateForm(t *testing.T) {
+	withCreate := ResourceConfig{
+		ID: "with-create", Title: "T", Section: "T",
+		Columns:    []table.Column{{Title: "K", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "k")} },
+		CreateFields: []FormField{
+			{Key: "name", Label: "Name", Required: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			return "created " + v["name"], nil
+		},
+	}
+	rm := newResourceListModel(NewTheme(), nil, withCreate)
+	rm.applyRows(nil)
+	rm, _ = rm.Update(keyMsg('n'))
+	if rm.create == nil {
+		t.Fatalf("`n` should open create form when CreateFn is wired")
+	}
+
+	withoutCreate := ResourceConfig{
+		ID: "without-create", Title: "T", Section: "T",
+		Columns:    []table.Column{{Title: "K", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "k")} },
+	}
+	rm2 := newResourceListModel(NewTheme(), nil, withoutCreate)
+	rm2.applyRows(nil)
+	rm2, _ = rm2.Update(keyMsg('n'))
+	if rm2.create != nil {
+		t.Errorf("`n` should be a no-op when CreateFn is nil")
+	}
+}
+
+// TestResource_CreateFormRequiresFields : Enter without filling
+// required fields surfaces a validation error + leaves the form open.
+func TestResource_CreateFormRequiresFields(t *testing.T) {
+	cfg := ResourceConfig{
+		ID: "x", Title: "X", Section: "X",
+		Columns:    []table.Column{{Title: "K", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "k")} },
+		CreateFields: []FormField{
+			{Key: "name", Label: "Name", Required: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			return "ok", nil
+		},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows(nil)
+	rm, _ = rm.Update(keyMsg('n'))
+	rm, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if rm.create == nil {
+		t.Fatalf("form should stay open on validation error")
+	}
+	if rm.create.errMsg == "" {
+		t.Errorf("missing required field should surface errMsg")
+	}
+}
+
+// TestResource_CreateFormEscClosesAndDiscards : Esc on the form
+// reverts to the table view without firing CreateFn.
+func TestResource_CreateFormEscClosesAndDiscards(t *testing.T) {
+	called := false
+	cfg := ResourceConfig{
+		ID: "x", Title: "X", Section: "X",
+		Columns:      []table.Column{{Title: "K", Width: 10}},
+		List:         func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells:   func(r map[string]any) []string { return []string{s(r, "k")} },
+		CreateFields: []FormField{{Key: "name", Label: "Name"}},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			called = true
+			return "", nil
+		},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows(nil)
+	rm, _ = rm.Update(keyMsg('n'))
+	// Esc emits createCancelMsg. The ResourceListModel handles that
+	// by setting create=nil — but only when the model receives the
+	// cancel msg via Update. Drive it explicitly.
+	_, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		msg := cmd()
+		rm, _ = rm.Update(msg)
+	}
+	if rm.create != nil {
+		t.Errorf("Esc should close the form")
+	}
+	if called {
+		t.Errorf("CreateFn should not be called on cancel")
+	}
+}
