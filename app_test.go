@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	weftv1 "github.com/openweft/weft-proto"
 	"google.golang.org/grpc"
@@ -819,5 +820,65 @@ func TestCatalogue_AllResourcesDistinct(t *testing.T) {
 	}
 	if len(seen) < 20 {
 		t.Errorf("only %d resources in catalogue, want >= 20", len(seen))
+	}
+}
+
+// TestResource_EnterOpensDetailDrawer : after switching to a resource
+// view, Enter on a selected row opens the detail drawer. Esc closes.
+func TestResource_EnterOpensDetailDrawer(t *testing.T) {
+	cfg := ResourceConfig{
+		ID: "test-noun", Title: "Test", Section: "Test",
+		Columns: []table.Column{{Title: "K", Width: 10}},
+		List: func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
+			return []map[string]any{{"uuid": "u-1", "name": "alpha", "extra": "value"}}, nil
+		},
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha", "extra": "value"}})
+
+	// Enter opens.
+	rm, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !rm.detailOpen {
+		t.Fatalf("Enter should open detail drawer")
+	}
+	if rm.detailRow["name"] != "alpha" {
+		t.Errorf("detail row not the selected one : %+v", rm.detailRow)
+	}
+
+	// Esc closes.
+	rm, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if rm.detailOpen {
+		t.Errorf("Esc should close drawer")
+	}
+	if rm.detailRow != nil {
+		t.Errorf("detailRow should be nil after close")
+	}
+}
+
+// TestResource_DetailDrawerSwallowsActionKeys : while the drawer is
+// open, pressing an action key like `d` must NOT trigger the action
+// (no risk of accidentally deleting while inspecting).
+func TestResource_DetailDrawerSwallowsActionKeys(t *testing.T) {
+	called := false
+	cfg := ResourceConfig{
+		ID: "x", Title: "X", Section: "X",
+		Columns: []table.Column{{Title: "K", Width: 10}},
+		List:    func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+		Actions: []ResourceAction{
+			{Key: "d", Label: "del", Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+				called = true
+				return "", nil
+			}},
+		},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha"}})
+	rm.detailOpen = true
+	rm.detailRow = rm.rows[0]
+	rm, _ = rm.Update(keyMsg('d'))
+	if called {
+		t.Errorf("`d` should not fire the action while drawer is open")
 	}
 }
