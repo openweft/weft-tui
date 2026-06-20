@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	weftv1 "github.com/openweft/weft-proto"
 )
 
 // tab identifies one of the top-level views. The integer is also
@@ -25,9 +26,15 @@ const (
 	tabVMs
 	tabProjects
 	tabEvents
+	// tabResource = generic ResourceListModel reached via the
+	// command palette (`:networks`, `:volumes`, …). Never a fixed
+	// shortcut ; the palette is the only path in.
+	tabResource
 )
 
 // tabLabels mirrors `tab` ; order MUST match the const block above.
+// The tabResource label is dynamic (changes per resource) — handled
+// in View() instead of relying on this slice.
 var tabLabels = []string{"Hosts", "VMs", "Projects", "Events"}
 
 // refreshInterval is the cadence the model auto-refreshes the current
@@ -66,9 +73,17 @@ type Model struct {
 	vms      vmsModel
 	projects projectsModel
 	events   eventsModel
-	width    int
-	height   int
-	showHelp bool
+	// resource is the active ResourceListModel when active == tabResource ;
+	// nil otherwise. Reused across palette switches : creating a new
+	// model on every switch would reset the cursor / cause flicker.
+	resource map[string]*ResourceListModel
+	// currentResource holds the slug of the resource being displayed
+	// when active == tabResource.
+	currentResource string
+	palette         paletteModel
+	width           int
+	height          int
+	showHelp        bool
 
 	// eventsPump bridges the WatchEvents goroutine to the Update
 	// loop. Allocated lazily the first time we open the Events tab,
@@ -92,6 +107,7 @@ func New(client Client) Model {
 		vms:      newVMsModel(theme),
 		projects: newProjectsModel(theme),
 		events:   newEventsModel(theme),
+		resource: map[string]*ResourceListModel{},
 	}
 }
 
@@ -102,6 +118,34 @@ func (m Model) Init() tea.Cmd {
 		loadHostsCmd(m.client),
 		tickRefresh(),
 	)
+}
+
+// switchToResource flips the active view to the named resource
+// (creating + initialising its ResourceListModel on first access).
+// Called from the command palette's Enter handler. Returns the Init
+// Cmd to kick off the initial list fetch.
+func (m *Model) switchToResource(id string) tea.Cmd {
+	cfg, ok := resourceByID(id)
+	if !ok {
+		m.setError("unknown resource: " + id)
+		return nil
+	}
+	rm, exists := m.resource[id]
+	if !exists {
+		// Cast the narrow Client interface to the full WeftAgentClient.
+		// In production this is the underlying weftv1.WeftAgentClient ;
+		// in tests it's a fake that may or may not implement everything.
+		var raw weftv1.WeftAgentClient
+		if c, ok := m.client.(weftv1.WeftAgentClient); ok {
+			raw = c
+		}
+		rm = newResourceListModel(m.theme, raw, cfg)
+		m.resource[id] = rm
+	}
+	m.active = tabResource
+	m.currentResource = id
+	m.clearStatus()
+	return rm.Init()
 }
 
 // refreshTickMsg is the tea.Tick payload that fires every
@@ -149,6 +193,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
+	case resourceLoadedMsg:
+		if rm, ok := m.resource[msg.cfg]; ok {
+			_, cmd := rm.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case resourceActionMsg:
+		if msg.err != nil {
+			m.setError(fmt.Sprintf("%s : %s", msg.action, msg.err))
+		} else if msg.msg != "" {
+			m.setMsg(msg.msg)
+		}
+		if rm, ok := m.resource[msg.cfg]; ok {
+			return m, rm.loadCmd()
+		}
+		return m, nil
+
 	case refreshTickMsg:
 		// Re-arm the ticker + refresh whichever tab is active.
 		cmds := []tea.Cmd{tickRefresh()}
@@ -159,6 +221,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, loadVMsCmd(m.client))
 		case tabProjects:
 			cmds = append(cmds, loadProjectsCmd(m.client))
+		case tabResource:
+			if rm, ok := m.resource[m.currentResource]; ok {
+				cmds = append(cmds, rm.loadCmd())
+			}
 			// Events stream is self-driven ; nothing to do here.
 		}
 		return m, tea.Batch(cmds...)
@@ -395,8 +461,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Command palette open : capture every key until Enter/Esc.
+	if m.palette.open {
+		_, switchTo := m.palette.handleKey(msg)
+		if switchTo != "" {
+			cmd := m.switchToResource(switchTo)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	// --- Global keys. ---
 	switch key {
+	case ":":
+		// Open the command palette. Lets the operator type a
+		// resource id (`networks`, `volumes`, …) ; Enter switches
+		// the active view to the matching ResourceListModel.
+		m.palette.open = true
+		m.palette.input = ""
+		return m, nil
 	case "q", "ctrl+c":
 		if m.eventsPump != nil {
 			m.eventsPump.stop()
@@ -450,6 +533,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleProjectsKey(msg, key)
 	case tabEvents:
 		return m.handleEventsKey(msg, key)
+	case tabResource:
+		if rm, ok := m.resource[m.currentResource]; ok {
+			_, cmd := rm.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -612,18 +700,26 @@ func (m Model) View() string {
 	header := m.renderTabs()
 	body := m.renderBody()
 	status := m.renderStatusBar()
-	return strings.Join([]string{header, body, status}, "\n")
+	parts := []string{header, body}
+	if m.palette.open {
+		parts = append(parts, m.palette.View(m.theme, m.width))
+	}
+	parts = append(parts, status)
+	return strings.Join(parts, "\n")
 }
 
 func (m Model) renderTabs() string {
-	parts := make([]string, len(tabLabels))
+	parts := make([]string, 0, len(tabLabels)+1)
 	for i, label := range tabLabels {
 		text := fmt.Sprintf("%d %s", i+1, label)
 		if tab(i) == m.active {
-			parts[i] = m.theme.ActiveTab.Render(text)
+			parts = append(parts, m.theme.ActiveTab.Render(text))
 		} else {
-			parts[i] = m.theme.Tab.Render(text)
+			parts = append(parts, m.theme.Tab.Render(text))
 		}
+	}
+	if m.active == tabResource && m.currentResource != "" {
+		parts = append(parts, m.theme.ActiveTab.Render(": "+m.currentResource))
 	}
 	title := m.theme.Title.Render("weft tui")
 	tabs := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
@@ -640,12 +736,22 @@ func (m Model) renderBody() string {
 		return m.projects.View(m.width)
 	case tabEvents:
 		return m.events.View(m.width)
+	case tabResource:
+		if rm, ok := m.resource[m.currentResource]; ok {
+			return rm.View(m.width)
+		}
+		return ""
 	}
 	return ""
 }
 
 func (m Model) renderStatusBar() string {
-	left := m.theme.StatusKey.Render(tabLabels[m.active])
+	var left string
+	if m.active == tabResource {
+		left = m.theme.StatusKey.Render(m.currentResource)
+	} else {
+		left = m.theme.StatusKey.Render(tabLabels[m.active])
+	}
 	mid := ""
 	var ts time.Time
 	switch m.active {
@@ -655,6 +761,10 @@ func (m Model) renderStatusBar() string {
 		ts = m.vms.lastRefresh
 	case tabProjects:
 		ts = m.projects.lastRefresh
+	case tabResource:
+		if rm, ok := m.resource[m.currentResource]; ok {
+			ts = rm.refresh
+		}
 	}
 	if !ts.IsZero() {
 		mid = m.theme.StatusVal.Render(" refreshed " + ts.Format("15:04:05"))

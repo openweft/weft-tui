@@ -18,9 +18,17 @@ type helpBinding struct {
 // the per-tab tables below.
 var globalBindings = []helpBinding{
 	{"1..4", "switch tab (Hosts / VMs / Projects / Events)"},
+	{":", "open command palette (`:networks`, `:volumes`, …)"},
 	{"r", "refresh current tab"},
 	{"?", "toggle this help overlay"},
 	{"q / Ctrl+C", "quit"},
+}
+
+var paletteBindings = []helpBinding{
+	{"Tab", "complete to the best-match resource id"},
+	{"Enter", "switch to the typed resource"},
+	{"Esc", "cancel"},
+	{"d", "delete selected row (asks for confirmation)"},
 }
 
 var hostsBindings = []helpBinding{
@@ -66,6 +74,7 @@ var tabHelp = []struct {
 	{"VMs tab", vmsBindings},
 	{"Projects tab", projectsBindings},
 	{"Events tab", eventsBindings},
+	{"Command palette + resource view", paletteBindings},
 }
 
 // helpView renders the overlay shown when the user toggles `?`. It is
