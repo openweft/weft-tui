@@ -29,7 +29,10 @@ var paletteBindings = []helpBinding{
 	{"Enter (palette)", "switch to the typed resource"},
 	{"Esc", "cancel"},
 	{"Enter (table row)", "open the detail drawer (every field of the row)"},
+	{"n", "new — open the create form (when wired for that resource)"},
 	{"d", "delete selected row (asks for confirmation)"},
+	{"Tab (form)", "cycle to next field"},
+	{"Enter (form)", "submit"},
 }
 
 var hostsBindings = []helpBinding{

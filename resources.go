@@ -41,6 +41,13 @@ type ResourceConfig struct {
 	// Actions are the keypresses the user can trigger on the
 	// selected row. Optional.
 	Actions []ResourceAction
+	// CreateFields + CreateFn opt the resource into the `n` create
+	// flow. CreateFields drives the form's textinputs ; CreateFn
+	// turns the collected values into a CreateXxx RPC call. Leave
+	// both nil to disable creation (operator falls back to the CLI
+	// or webui for that resource).
+	CreateFields []FormField
+	CreateFn     CreateFn
 }
 
 // ResourceAction is one operator-triggered command (delete, rename,
@@ -77,6 +84,10 @@ type ResourceListModel struct {
 	// resources.
 	detailOpen bool
 	detailRow  map[string]any
+
+	// create is the form model when the operator pressed `n` to
+	// start a new entry. nil = no create flow in progress.
+	create *createFormModel
 }
 
 // newResourceListModel builds a fresh model for a registered resource.
@@ -172,7 +183,42 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		}
 		return m, nil
 
+	case createSubmitMsg:
+		if msg.cfg != m.cfg.ID || m.create == nil {
+			return m, nil
+		}
+		cfg := m.cfg
+		client := m.client
+		values := msg.values
+		// Close the form ; the action message will re-trigger a list
+		// refresh on success.
+		m.create = nil
+		return m, func() tea.Msg {
+			if cfg.CreateFn == nil {
+				return resourceActionMsg{cfg: cfg.ID, action: "new", err: fmt.Errorf("create not wired")}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			out, err := cfg.CreateFn(ctx, client, values)
+			return resourceActionMsg{cfg: cfg.ID, action: "new", msg: out, err: err}
+		}
+
+	case createCancelMsg:
+		if msg.cfg == m.cfg.ID {
+			m.create = nil
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		// Create form open : route every key to the form's
+		// textinput / submit logic. The form itself emits the
+		// submit/cancel messages handled above.
+		if m.create != nil {
+			f, cmd := m.create.Update(msg)
+			m.create = f
+			return m, cmd
+		}
+
 		// Detail drawer open : Esc/q closes, everything else is a
 		// no-op so the drawer doesn't accidentally consume action
 		// keys meant for the underlying table.
@@ -237,10 +283,14 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		}
 
 		// Normal mode : action keys + r for refresh + Enter for the
-		// detail drawer + table nav.
+		// detail drawer + `n` for new + table nav.
 		key := msg.String()
 		if key == "r" {
 			return m, m.loadCmd()
+		}
+		if key == "n" && m.cfg.CreateFn != nil {
+			m.create = newCreateFormModel(m.cfg)
+			return m, nil
 		}
 		if key == "enter" {
 			row := m.selected()
@@ -303,6 +353,10 @@ func (m *ResourceListModel) View(width int) string {
 	}
 	if m.err != nil {
 		b.WriteString(m.theme.BadgeBad.Render("error: " + m.err.Error()))
+		return b.String()
+	}
+	if m.create != nil {
+		b.WriteString(m.create.View(m.theme))
 		return b.String()
 	}
 	if m.detailOpen {
