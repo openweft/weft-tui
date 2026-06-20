@@ -34,6 +34,21 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project (name or UUID)", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "cidr", Label: "CIDR", Placeholder: "10.42.0.0/24", Required: true},
+			{Key: "gateway", Label: "Gateway (optional)", Placeholder: "10.42.0.1"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateNetwork(ctx, &weftv1.CreateNetworkRequest{
+				Project: v["project"], Name: v["name"], Cidr: v["cidr"], Gateway: v["gateway"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created network " + v["name"], nil
+		},
 	},
 	{
 		ID: "subnets", Title: "Subnets", Section: "Network",
@@ -67,6 +82,23 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteVolume(ctx, &weftv1.DeleteVolumeRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "size_gib", Label: "Size (GiB)", Required: true, Numeric: true},
+			{Key: "format", Label: "Format", Placeholder: "raw | qcow2"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			size, _ := strconv.Atoi(v["size_gib"])
+			_, err := c.CreateVolume(ctx, &weftv1.CreateVolumeRequest{
+				Project: v["project"], Name: v["name"],
+				SizeGib: int64(size), Format: v["format"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created volume " + v["name"], nil
 		},
 	},
 	{
@@ -204,6 +236,23 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "selector", Label: "Selector", Placeholder: "tier=edge,role=compute", Required: true},
+			{Key: "target_count", Label: "Target count", Required: true, Numeric: true},
+			{Key: "anti_affinity", Label: "Anti-affinity", Placeholder: "host | az | rack"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			n, _ := strconv.Atoi(v["target_count"])
+			_, err := c.CreateSchedulingRule(ctx, &weftv1.CreateSchedulingRuleRequest{
+				Name: v["name"], Selector: v["selector"],
+				TargetCount: int32(n), AntiAffinity: v["anti_affinity"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created scheduling rule " + v["name"], nil
+		},
 	},
 	{
 		ID: "tenants", Title: "Tenants", Section: "Identity",
@@ -220,6 +269,19 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteTenant(ctx, &weftv1.DeleteTenantRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "domain", Label: "Domain (e.g. acme.example.com)", Placeholder: "acme.example.com"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateTenant(ctx, &weftv1.CreateTenantRequest{
+				Name: v["name"], Domain: v["domain"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created tenant " + v["name"], nil
 		},
 	},
 	{
@@ -256,6 +318,20 @@ var resourceCatalogue = []ResourceConfig{
 				}
 				return "removed " + s(row, "name"), nil
 			}},
+		},
+		CreateFields: []FormField{
+			{Key: "name", Label: "Name (unique cluster-wide)", Required: true},
+			{Key: "public_key", Label: "Public key (OpenSSH single-line)", Required: true},
+			{Key: "comment", Label: "Comment (optional)"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.AddSSHKeyCatalogue(ctx, &weftv1.AddSSHKeyCatalogueRequest{
+				Name: v["name"], PublicKey: v["public_key"], Comment: v["comment"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "added ssh key " + v["name"], nil
 		},
 	},
 	{
