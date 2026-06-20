@@ -735,3 +735,89 @@ func drainCmd(t *testing.T, cmd tea.Cmd) {
 		}
 	}
 }
+
+// --- Command palette tests. ---
+
+// TestPalette_OpensOnColon : pressing `:` opens the palette + sets
+// the prompt to empty.
+func TestPalette_OpensOnColon(t *testing.T) {
+	m := New(&fakeClient{})
+	next, _ := m.Update(keyMsg(':'))
+	m = next.(Model)
+	if !m.palette.open {
+		t.Fatalf("palette should be open after `:`")
+	}
+}
+
+// TestPalette_TypeAndEnterSwitchesView : type "networks" + Enter
+// switches the active tab to tabResource with currentResource set.
+func TestPalette_TypeAndEnterSwitchesView(t *testing.T) {
+	m := New(&fakeClient{})
+	next, _ := m.Update(keyMsg(':'))
+	m = next.(Model)
+	for _, r := range "networks" {
+		next, _ = m.Update(keyMsg(r))
+		m = next.(Model)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.active != tabResource {
+		t.Errorf("active = %d, want tabResource (%d)", m.active, tabResource)
+	}
+	if m.currentResource != "networks" {
+		t.Errorf("currentResource = %q, want networks", m.currentResource)
+	}
+}
+
+// TestPalette_EscClosesWithoutSwitch : pressing Esc while typing
+// closes the palette without changing the active view.
+func TestPalette_EscClosesWithoutSwitch(t *testing.T) {
+	m := New(&fakeClient{})
+	originalActive := m.active
+	next, _ := m.Update(keyMsg(':'))
+	m = next.(Model)
+	for _, r := range "vol" {
+		next, _ = m.Update(keyMsg(r))
+		m = next.(Model)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.palette.open {
+		t.Errorf("palette should be closed after Esc")
+	}
+	if m.active != originalActive {
+		t.Errorf("active changed unexpectedly : got %d, want %d", m.active, originalActive)
+	}
+}
+
+// TestPalette_TabCompletes : pressing Tab on a partial match fills
+// the prompt with the matching resource id.
+func TestPalette_TabCompletes(t *testing.T) {
+	m := New(&fakeClient{})
+	next, _ := m.Update(keyMsg(':'))
+	m = next.(Model)
+	for _, r := range "net" {
+		next, _ = m.Update(keyMsg(r))
+		m = next.(Model)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	if m.palette.input != "networks" {
+		t.Errorf("Tab completion : input = %q, want networks", m.palette.input)
+	}
+}
+
+// TestCatalogue_AllResourcesDistinct : every catalogue entry has a
+// unique slug — paranoia check against a future copy-paste mistake.
+func TestCatalogue_AllResourcesDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for _, r := range resourceCatalogue {
+		if seen[r.ID] {
+			t.Errorf("duplicate catalogue id : %q", r.ID)
+		}
+		seen[r.ID] = true
+	}
+	if len(seen) < 20 {
+		t.Errorf("only %d resources in catalogue, want >= 20", len(seen))
+	}
+}
