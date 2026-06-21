@@ -20,6 +20,7 @@ var globalBindings = []helpBinding{
 	{"1..4", "switch tab (Hosts / VMs / Projects / Events)"},
 	{":", "open command palette (`:networks`, `:volumes`, …)"},
 	{"r", "refresh current tab"},
+	{"T", "cycle colour theme (green / blue / amber / violet / mono) ; persisted to ~/.weft/tui-theme"},
 	{"?", "toggle this help overlay"},
 	{"q / Ctrl+C", "quit"},
 }
