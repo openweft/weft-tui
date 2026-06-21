@@ -65,8 +65,9 @@ type Client interface {
 // Model is the Bubble Tea state. Exported so the test suite can poke
 // at it directly without going through tea.Program.
 type Model struct {
-	theme  Theme
-	client Client
+	theme    Theme
+	themeIdx int // index into themePresets ; cycled by the `T` key
+	client   Client
 
 	active   tab
 	hosts    hostsModel
@@ -97,10 +98,17 @@ type Model struct {
 
 // New builds a fresh top-level model. Pass nil for client in tests
 // or dry-run builds — every Cmd factory degrades gracefully.
+//
+// Theme : reads the operator's persisted choice from
+// ~/.weft/tui-theme (falls back to green) so a re-launch keeps the
+// last selection. The `T` key cycles through themePresets at
+// runtime ; saveTheme persists the new choice.
 func New(client Client) Model {
-	theme := NewTheme()
+	idx := themeIndexByName(loadSavedTheme())
+	theme := NewThemeWith(themePresets[idx])
 	return Model{
 		theme:    theme,
+		themeIdx: idx,
 		client:   client,
 		active:   tabHosts,
 		hosts:    newHostsModel(theme),
@@ -487,6 +495,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "?":
 		m.showHelp = true
+		return m, nil
+	case "T":
+		// Cycle to the next theme preset + persist the choice so
+		// the next launch picks it up. Capital T (not lowercase)
+		// to avoid colliding with any future single-letter command
+		// on the various tabs.
+		m.themeIdx = (m.themeIdx + 1) % len(themePresets)
+		preset := themePresets[m.themeIdx]
+		m.theme = NewThemeWith(preset)
+		// Per-tab models keep their own captured theme — refresh
+		// them so the new colours take effect on the next render
+		// without a tab switch.
+		m.hosts.theme = m.theme
+		m.vms.theme = m.theme
+		m.projects.theme = m.theme
+		m.events.theme = m.theme
+		for _, r := range m.resource {
+			r.theme = m.theme
+		}
+		if err := saveTheme(preset.Name); err != nil {
+			m.statusErr = true
+			m.statusMsg = "theme : couldn't persist (" + err.Error() + ")"
+		} else {
+			m.statusErr = false
+			m.statusMsg = "theme → " + preset.Name
+		}
 		return m, nil
 	case "1":
 		m.active = tabHosts
