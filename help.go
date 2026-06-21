@@ -25,8 +25,11 @@ var globalBindings = []helpBinding{
 }
 
 var paletteBindings = []helpBinding{
-	{"Tab", "complete to the best-match resource id"},
-	{"Enter (palette)", "switch to the typed resource"},
+	{":", "open the palette ; the full catalogue is listed underneath"},
+	{"↑/↓ or Ctrl-P/N", "browse the catalogue list (no typing required)"},
+	{"a-z / 0-9 / -", "type to filter (substring match — `vol` lists every volume-related resource)"},
+	{"Tab", "accept the top match into the input box (useful to refine further)"},
+	{"Enter (palette)", "open the highlighted resource"},
 	{"Esc", "cancel"},
 	{"Enter (table row)", "open the detail drawer (every field of the row)"},
 	{"n", "new — open the create form (when wired for that resource)"},

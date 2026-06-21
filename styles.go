@@ -29,7 +29,12 @@ type Theme struct {
 // `lipgloss.AdaptiveColor{Light, Dark}` so the same style produces a
 // readable hue regardless of terminal background.
 func NewTheme() Theme {
-	primary := lipgloss.AdaptiveColor{Light: "#5B21B6", Dark: "#A78BFA"}
+	// Primary = vivid green. Distinct from `ok` (softer green, used
+	// for success badges) so titles + active tabs read as "weft
+	// chrome" rather than "operation succeeded". 2026-06-21 :
+	// switched away from violet per operator feedback ("ça serait
+	// mieux en vert plutôt que violet").
+	primary := lipgloss.AdaptiveColor{Light: "#16A34A", Dark: "#4ADE80"}
 	muted := lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}
 	ok := lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#86EFAC"}
 	warn := lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FCD34D"}
