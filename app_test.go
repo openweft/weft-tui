@@ -868,6 +868,75 @@ func TestPalette_ArrowsMoveSelection(t *testing.T) {
 	}
 }
 
+// TestTheme_TCycles pins the v0.3.4 theme picker : pressing `T`
+// cycles to the next preset and updates the Model's themeIdx.
+// Persistence is exercised by loadSavedTheme/saveTheme directly ;
+// here we just verify the cycle wraps + applies.
+func TestTheme_TCycles(t *testing.T) {
+	m := New(&fakeClient{})
+	startIdx := m.themeIdx
+	next, _ := m.Update(keyMsg('T'))
+	m = next.(Model)
+	if m.themeIdx == startIdx {
+		t.Errorf("T should cycle themeIdx ; stayed at %d", startIdx)
+	}
+	want := (startIdx + 1) % len(themePresets)
+	if m.themeIdx != want {
+		t.Errorf("themeIdx after T = %d, want %d", m.themeIdx, want)
+	}
+	// Cycle through every preset + back to start.
+	for i := 0; i < len(themePresets)-1; i++ {
+		next, _ = m.Update(keyMsg('T'))
+		m = next.(Model)
+	}
+	if m.themeIdx != startIdx {
+		t.Errorf("after %d total T presses themeIdx = %d, want %d (wrap to start)", len(themePresets), m.themeIdx, startIdx)
+	}
+}
+
+// TestTheme_IndexByNameFallback pins loadSavedTheme's safety :
+// an unknown name in the persisted file resolves to the default
+// (green), never crashes or leaks a wrong theme.
+func TestTheme_IndexByNameFallback(t *testing.T) {
+	if got := themeIndexByName("does-not-exist"); got != 0 {
+		t.Errorf("themeIndexByName(unknown) = %d, want 0 (green default)", got)
+	}
+	if got := themeIndexByName("green"); got != 0 {
+		t.Errorf("themeIndexByName(green) = %d, want 0", got)
+	}
+	if got := themeIndexByName("blue"); got != 1 {
+		t.Errorf("themeIndexByName(blue) = %d, want 1", got)
+	}
+}
+
+// TestCatalogue_RWCoverage pins the v0.3.4 contract : MOST
+// resources support Create now. The legitimate read-only ones
+// (catalogue / derived / inventory-from-external-source) are
+// listed by exception ; any new resource that lands without
+// Create needs an explicit waiver.
+func TestCatalogue_RWCoverage(t *testing.T) {
+	expectedReadOnly := map[string]bool{
+		"users":            true, // OIDC-sourced, no direct create
+		"flavors":          true, // catalogue managed via HCL
+		"images":           true, // pulled from OCI, not created
+		"plugins":          true, // installed, not created
+		"volume-snapshots": true, // derived from volumes, separate flow
+		"volume-backups":   true, // derived from volumes, separate flow
+	}
+	for _, r := range resourceCatalogue {
+		hasCreate := r.CreateFn != nil
+		if expectedReadOnly[r.ID] {
+			if hasCreate {
+				t.Errorf("resource %q is documented read-only but has CreateFn — update expectedReadOnly", r.ID)
+			}
+		} else {
+			if !hasCreate {
+				t.Errorf("resource %q is missing CreateFn — wire CreateFields + CreateFn, or add to expectedReadOnly with a documented reason", r.ID)
+			}
+		}
+	}
+}
+
 // TestPalette_EnterPicksSelectedNotInput pins the v2 contract :
 // Enter opens the HIGHLIGHTED resource (which may differ from the
 // raw input when typing partial then arrowing). The old v1 path

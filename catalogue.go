@@ -66,6 +66,22 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "network_uuid", Label: "Network UUID", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "cidr", Label: "CIDR", Placeholder: "10.42.1.0/24", Required: true},
+			{Key: "gateway", Label: "Gateway (optional)", Placeholder: "10.42.1.1"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateSubnet(ctx, &weftv1.CreateSubnetRequest{
+				NetworkUuid: v["network_uuid"], Name: v["name"],
+				Cidr: v["cidr"], Gateway: v["gateway"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created subnet " + v["name"], nil
+		},
 	},
 	{
 		ID: "volumes", Title: "Volumes", Section: "Storage",
@@ -117,6 +133,23 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "size_gb", Label: "Size (GB)", Required: true, Numeric: true},
+			{Key: "backend", Label: "Backend (optional)", Placeholder: "cubefs"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			size, _ := strconv.Atoi(v["size_gb"])
+			_, err := c.CreateShare(ctx, &weftv1.CreateShareRequest{
+				Project: v["project"], Name: v["name"],
+				SizeGb: int64(size), Backend: v["backend"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created share " + v["name"], nil
+		},
 	},
 	{
 		ID: "buckets", Title: "Buckets", Section: "Storage",
@@ -133,6 +166,25 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteBucket(ctx, &weftv1.DeleteBucketRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "endpoint", Label: "Endpoint URL", Placeholder: "https://s3.example.com", Required: true},
+			{Key: "region", Label: "Region", Placeholder: "us-east-1"},
+			{Key: "access_key_id", Label: "Access key ID", Required: true},
+			{Key: "secret_access_key", Label: "Secret access key", Required: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateBucket(ctx, &weftv1.CreateBucketRequest{
+				Project: v["project"], Name: v["name"],
+				Endpoint: v["endpoint"], Region: v["region"],
+				AccessKeyId: v["access_key_id"], SecretAccessKey: v["secret_access_key"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created bucket " + v["name"], nil
 		},
 	},
 	{
@@ -151,6 +203,19 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "network", Label: "Edge network (name or UUID)", Required: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.AllocateFloatingIP(ctx, &weftv1.AllocateFloatingIPRequest{
+				Project: v["project"], Network: v["network"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "allocated floating IP on " + v["network"], nil
+		},
 	},
 	{
 		ID: "loadbalancers", Title: "Load Balancers", Section: "Network",
@@ -167,6 +232,22 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteLoadBalancer(ctx, &weftv1.DeleteLoadBalancerRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "listen_addr", Label: "Listen address", Placeholder: ":80", Required: true},
+			{Key: "protocol", Label: "Protocol", Placeholder: "tcp | http", Required: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateLoadBalancer(ctx, &weftv1.CreateLoadBalancerRequest{
+				Project: v["project"], Name: v["name"],
+				ListenAddr: v["listen_addr"], Protocol: v["protocol"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created load balancer " + v["name"], nil
 		},
 	},
 	{
@@ -185,6 +266,23 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Zone name", Placeholder: "example.com.", Required: true},
+			{Key: "soa_email", Label: "SOA email", Placeholder: "hostmaster@example.com"},
+			{Key: "ttl", Label: "Default TTL (seconds)", Placeholder: "3600", Numeric: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			ttl, _ := strconv.Atoi(v["ttl"])
+			_, err := c.CreateDNSZone(ctx, &weftv1.CreateDNSZoneRequest{
+				Project: v["project"], Name: v["name"],
+				SoaEmail: v["soa_email"], Ttl: int32(ttl),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created DNS zone " + v["name"], nil
+		},
 	},
 	{
 		ID: "dns-records", Title: "DNS Records", Section: "Network",
@@ -202,6 +300,27 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "zone_uuid", Label: "Zone UUID", Required: true},
+			{Key: "name", Label: "Record name", Placeholder: "www", Required: true},
+			{Key: "type", Label: "Type", Placeholder: "A | AAAA | CNAME | MX | TXT", Required: true},
+			{Key: "value", Label: "Value", Required: true},
+			{Key: "ttl", Label: "TTL (seconds)", Placeholder: "300", Numeric: true},
+			{Key: "priority", Label: "Priority (MX only)", Numeric: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			ttl, _ := strconv.Atoi(v["ttl"])
+			prio, _ := strconv.Atoi(v["priority"])
+			_, err := c.CreateDNSRecord(ctx, &weftv1.CreateDNSRecordRequest{
+				ZoneUuid: v["zone_uuid"], Name: v["name"],
+				Type: v["type"], Value: v["value"],
+				Ttl: int32(ttl), Priority: int32(prio),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created DNS record " + v["name"], nil
+		},
 	},
 	{
 		ID: "security-groups", Title: "Security Groups", Section: "Network",
@@ -218,6 +337,21 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteSecurityGroup(ctx, &weftv1.DeleteSecurityGroupRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "project", Label: "Project", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "description", Label: "Description"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateSecurityGroup(ctx, &weftv1.CreateSecurityGroupRequest{
+				Project: v["project"], Name: v["name"],
+				Description: v["description"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created security group " + v["name"], nil
 		},
 	},
 	{
@@ -362,6 +496,22 @@ var resourceCatalogue = []ResourceConfig{
 				return err
 			})},
 		},
+		CreateFields: []FormField{
+			{Key: "code", Label: "Code", Placeholder: "dc1", Required: true},
+			{Key: "name", Label: "Name", Required: true},
+			{Key: "region", Label: "Region", Placeholder: "fr-paris"},
+			{Key: "status", Label: "Status", Placeholder: "active"},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			_, err := c.CreateAZ(ctx, &weftv1.CreateAZRequest{
+				Code: v["code"], Name: v["name"],
+				Region: v["region"], Status: v["status"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created AZ " + v["code"], nil
+		},
 	},
 	{
 		ID: "racks", Title: "Racks", Section: "Admin",
@@ -377,6 +527,24 @@ var resourceCatalogue = []ResourceConfig{
 				_, err := c.DeleteRack(ctx, &weftv1.DeleteRackRequest{Uuid: uuid})
 				return err
 			})},
+		},
+		CreateFields: []FormField{
+			{Key: "az_uuid", Label: "AZ UUID", Required: true},
+			{Key: "code", Label: "Code", Placeholder: "r1", Required: true},
+			{Key: "name", Label: "Name"},
+			{Key: "status", Label: "Status", Placeholder: "active"},
+			{Key: "height_u", Label: "Height (U)", Placeholder: "42", Numeric: true},
+		},
+		CreateFn: func(ctx context.Context, c weftv1.WeftAgentClient, v map[string]string) (string, error) {
+			h, _ := strconv.Atoi(v["height_u"])
+			_, err := c.CreateRack(ctx, &weftv1.CreateRackRequest{
+				AzUuid: v["az_uuid"], Code: v["code"], Name: v["name"],
+				Status: v["status"], HeightU: int32(h),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "created rack " + v["code"], nil
 		},
 	},
 	{
