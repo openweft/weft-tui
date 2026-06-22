@@ -1040,8 +1040,9 @@ func TestHosts_CPMarker(t *testing.T) {
 		if row[0] != want {
 			t.Errorf("row[%d=%s].CP = %q, want %q", i, r.UUID, row[0], want)
 		}
-		// STATE column index 5 (after CP, UUID, HOSTNAME, AZ, RACK).
-		state := row[5]
+		// STATE column index 8 (after CP, UUID, HOSTNAME, AZ, RACK,
+		// CPU, RAM, GPU).
+		state := row[8]
 		if strings.ContainsAny(state, "\x1b") {
 			t.Errorf("row[%d].STATE contains ANSI escape : %q (should be plain text)", i, state)
 		}
@@ -1051,8 +1052,8 @@ func TestHosts_CPMarker(t *testing.T) {
 		if r.Cordoned && !strings.Contains(state, "cordoned") {
 			t.Errorf("row[%d].STATE missing 'cordoned' suffix : %q", i, state)
 		}
-		// CONN column index 6.
-		conn := row[6]
+		// CONN column index 9.
+		conn := row[9]
 		if strings.ContainsAny(conn, "\x1b") {
 			t.Errorf("row[%d].CONN contains ANSI escape : %q", i, conn)
 		}

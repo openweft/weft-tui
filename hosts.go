@@ -52,7 +52,20 @@ type hostsRow struct {
 	// Refreshed by the cross-pollination in app.go's vmsLoadedMsg /
 	// hostsLoadedMsg handlers — both sides recompute the map so a
 	// fresh tab visit always sees an up-to-date count.
-	VMCount int
+	VMCount   int
+	CPUCount  int32
+	MemoryMiB int64
+	GPUs      []hostsGPU
+}
+
+// hostsGPU mirrors the wire GPU shape for the per-row render. One
+// entry per physical accelerator ; the table cell summarises by
+// counting same-(vendor,model) pairs (e.g. "H200×4").
+type hostsGPU struct {
+	Vendor     string
+	Model      string
+	MemoryGiB  int32
+	MIGCapable bool
 }
 
 // hostsNIC mirrors the wire NetworkInterface ; field names match the
@@ -368,6 +381,9 @@ func hostsColumns() []table.Column {
 		{Title: "HOSTNAME", Width: 20},
 		{Title: "AZ", Width: 6},
 		{Title: "RACK", Width: 6},
+		{Title: "CPU", Width: 5},
+		{Title: "RAM", Width: 9},
+		{Title: "GPU", Width: 12},
 		{Title: "STATE", Width: 14},
 		{Title: "CONN", Width: 8},
 		{Title: "VMS", Width: 5},
@@ -506,6 +522,19 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 				FreeBytes:  m.FreeBytes,
 			})
 		}
+		hr.CPUCount = h.CpuCount
+		hr.MemoryMiB = h.MemoryMib
+		for _, g := range h.Gpus {
+			if g == nil {
+				continue
+			}
+			hr.GPUs = append(hr.GPUs, hostsGPU{
+				Vendor:     g.Vendor,
+				Model:      g.Model,
+				MemoryGiB:  g.MemoryGib,
+				MIGCapable: g.MigCapable,
+			})
+		}
 		rows = append(rows, hr)
 		tableRows = append(tableRows, hr.tableRow(m.theme, m.controlPlaneUUIDs))
 	}
@@ -552,6 +581,9 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	ver := dashEmpty(h.AgentVersion)
 	drivers := dashEmpty(formatDriverVersions(h.DriverVersions))
 	vms := strconv.Itoa(h.VMCount)
+	cpu := dashEmptyInt(int(h.CPUCount))
+	ram := dashEmpty(formatRAM(h.MemoryMiB))
+	gpu := dashEmpty(formatGPUs(h.GPUs))
 	// HYP dropped : DRIVERS already carries each loaded driver's
 	// kind (e.g. "qemu:v0.6.0") so a separate column would be
 	// redundant. Hypervisor is still in the detail drawer for
@@ -563,6 +595,9 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 		dashEmpty(h.Hostname),
 		dashEmpty(h.AZ),
 		dashEmpty(h.Rack),
+		cpu,
+		ram,
+		gpu,
 		state,
 		conn,
 		vms,
@@ -570,6 +605,66 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 		drivers,
 		last,
 	}
+}
+
+// dashEmptyInt renders an int as "—" when zero, the decimal value
+// otherwise. Mirrors dashEmpty's semantics for numeric columns
+// (CPU count specifically) so missing data reads consistently
+// across the table.
+func dashEmptyInt(v int) string {
+	if v <= 0 {
+		return "—"
+	}
+	return strconv.Itoa(v)
+}
+
+// formatRAM renders a MiB value as a human-readable size :
+// "32 GiB" past 1024 MiB, "768 MiB" below. 0 → "" so the dashEmpty
+// caller can substitute "—".
+func formatRAM(mib int64) string {
+	if mib <= 0 {
+		return ""
+	}
+	if mib >= 1024 {
+		gib := float64(mib) / 1024.0
+		return strconv.FormatFloat(gib, 'f', 0, 64) + " GiB"
+	}
+	return strconv.FormatInt(mib, 10) + " MiB"
+}
+
+// formatGPUs condenses a slice of GPUs into a single cell-friendly
+// string. Same-(vendor,model) entries collapse to "model×count"
+// (e.g. "H200×4") ; multi-SKU hosts join with " + ". Empty slice
+// → "" (dashEmpty caller turns it into "—").
+func formatGPUs(gpus []hostsGPU) string {
+	if len(gpus) == 0 {
+		return ""
+	}
+	type key struct{ vendor, model string }
+	counts := map[key]int{}
+	order := []key{}
+	for _, g := range gpus {
+		k := key{g.Vendor, g.Model}
+		if _, seen := counts[k]; !seen {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		label := k.model
+		if label == "" {
+			label = k.vendor
+		}
+		if label == "" {
+			label = "gpu"
+		}
+		if counts[k] > 1 {
+			label += "×" + strconv.Itoa(counts[k])
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, " + ")
 }
 
 // formatDriverVersions condenses a kind→version map into one cell-
