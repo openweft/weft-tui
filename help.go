@@ -48,6 +48,7 @@ var hostsBindings = []helpBinding{
 	{"d", "set state → down (drain prep)"},
 	{"x", "remove host (asks for confirmation)"},
 	{"y / n", "confirm / cancel remove (when prompted)"},
+	{"CP column", "`*` marks the host serving this TUI session's gRPC socket (the CP you're driving)"},
 }
 
 var vmsBindings = []helpBinding{

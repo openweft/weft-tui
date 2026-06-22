@@ -1016,6 +1016,66 @@ func TestHosts_DetailDrawerOnEnter(t *testing.T) {
 	}
 }
 
+// TestHosts_CPMarker pins the v0.3.8 contract : when localCPUUID
+// is set, the host with that UUID gets "*" in the CP column ; all
+// others get "—". STATE/CONN are PLAIN text (no inline ANSI) so
+// the bubbles/table truncator can't blank them under a narrow
+// terminal — pin that too.
+func TestHosts_CPMarker(t *testing.T) {
+	theme := NewTheme()
+	rows := []hostsRow{
+		{UUID: "host-A", Hostname: "h-a", State: "active", Connected: true},
+		{UUID: "host-B", Hostname: "h-b", State: "down"},
+		{UUID: "host-C", Hostname: "h-c", State: "active", Cordoned: true},
+	}
+	// CP = host-B.
+	for i, r := range rows {
+		row := r.tableRow(theme, "host-B")
+		// CP column.
+		want := "—"
+		if r.UUID == "host-B" {
+			want = "*"
+		}
+		if row[0] != want {
+			t.Errorf("row[%d=%s].CP = %q, want %q", i, r.UUID, row[0], want)
+		}
+		// STATE column index 6 (after CP, UUID, HOSTNAME, AZ, RACK, HYP).
+		state := row[6]
+		if strings.ContainsAny(state, "\x1b") {
+			t.Errorf("row[%d].STATE contains ANSI escape : %q (should be plain text)", i, state)
+		}
+		if !strings.Contains(state, r.State) {
+			t.Errorf("row[%d].STATE = %q, want to contain %q", i, state, r.State)
+		}
+		if r.Cordoned && !strings.Contains(state, "cordoned") {
+			t.Errorf("row[%d].STATE missing 'cordoned' suffix : %q", i, state)
+		}
+		// CONN column index 7.
+		conn := row[7]
+		if strings.ContainsAny(conn, "\x1b") {
+			t.Errorf("row[%d].CONN contains ANSI escape : %q", i, conn)
+		}
+		wantConn := "no"
+		if r.Connected {
+			wantConn = "yes"
+		}
+		if conn != wantConn {
+			t.Errorf("row[%d].CONN = %q, want %q", i, conn, wantConn)
+		}
+	}
+}
+
+// TestHosts_CPMarker_NoLocal pins the empty-UUID branch : when the
+// local UUID is unknown (RPC failed at boot, dev mode, etc.) every
+// row's CP column is "—" — no row gets a spurious mark.
+func TestHosts_CPMarker_NoLocal(t *testing.T) {
+	theme := NewTheme()
+	row := hostsRow{UUID: "host-X"}.tableRow(theme, "")
+	if row[0] != "—" {
+		t.Errorf("CP with empty local UUID = %q, want —", row[0])
+	}
+}
+
 // TestAutoFetchClusterName_NilClient pins the safety branch :
 // passing nil short-circuits to "" so a TUI booting against an
 // unreachable socket doesn't crash before the connection error
