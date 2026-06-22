@@ -81,10 +81,7 @@ func newHostsModel(theme Theme) hostsModel {
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
-	s.Selected = s.Selected.
-		Foreground(lipgloss.Color("0")).
-		Background(lipgloss.AdaptiveColor{Light: "#A78BFA", Dark: "#A78BFA"}).
-		Bold(true)
+	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	return hostsModel{theme: theme, table: tbl, loading: true}
 }

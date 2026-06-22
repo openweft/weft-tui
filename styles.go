@@ -23,6 +23,12 @@ type Theme struct {
 	BadgeWarn  lipgloss.Style
 	BadgeBad   lipgloss.Style
 	Faint      lipgloss.Style
+	// SelectedRow styles the highlighted row in every bubbles/table
+	// widget. Picks up the primary hue + black foreground for
+	// contrast — keeps the selected row visually consistent with the
+	// active theme instead of the hard-coded violet that used to
+	// ship across hosts/vms/projects/resources tables.
+	SelectedRow lipgloss.Style
 }
 
 // NewTheme builds the default theme. Adaptive colours are passed as

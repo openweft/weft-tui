@@ -90,10 +90,7 @@ func newVMsModel(theme Theme) vmsModel {
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
-	s.Selected = s.Selected.
-		Foreground(lipgloss.Color("0")).
-		Background(lipgloss.AdaptiveColor{Light: "#A78BFA", Dark: "#A78BFA"}).
-		Bold(true)
+	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	vp := viewport.New(80, 15)
 	return vmsModel{theme: theme, table: tbl, logsVP: vp, loading: true}
