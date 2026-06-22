@@ -8,13 +8,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	weftclient "github.com/openweft/weft-client"
+	weftv1 "github.com/openweft/weft-proto"
 )
 
 func main() {
@@ -45,12 +48,47 @@ func main() {
 	defer conn.Close()
 
 	model := New(client)
-	model.clusterName = *clusterName
+	// Cluster name resolution :
+	//   1. --cluster-name flag (or $WEFT_CLUSTER_NAME ; same value
+	//      via the flag's default) wins when explicitly set —
+	//      lets an operator override the persisted value ad-hoc.
+	//   2. Otherwise GetClusterInfo against the connected agent ;
+	//      the operator runs `weft admin cluster set-name` once at
+	//      provisioning and every subsequent TUI session picks it
+	//      up automatically.
+	//   3. Empty + RPC error / not-set → title bar shows just
+	//      "weft tui" (pre-v0.3.7 look).
+	if *clusterName != "" {
+		model.clusterName = *clusterName
+	} else {
+		model.clusterName = autoFetchClusterName(client)
+	}
 	prog := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// autoFetchClusterName calls GetClusterInfo on the connected agent
+// + returns the persisted name. Best-effort : RPC error or empty
+// response → "" so the title bar falls back to the pre-v0.3.7 look
+// ("weft tui" with no suffix). The flag/env path in main() short-
+// circuits this when the operator explicitly set a name.
+//
+// 3-second deadline so a slow agent at boot doesn't stall the TUI's
+// alt-screen switch. Cheap RPC ; the operator notices a stall.
+func autoFetchClusterName(client weftv1.WeftAgentClient) string {
+	if client == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := client.GetClusterInfo(ctx, &weftv1.GetClusterInfoRequest{})
+	if err != nil || resp == nil {
+		return ""
+	}
+	return resp.ClusterName
 }
 
 // defaultSocketPath returns $HOME/.weft/weft.sock — the same default
