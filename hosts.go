@@ -48,6 +48,11 @@ type hostsRow struct {
 	KernelVersion     string
 	NetworkInterfaces []hostsNIC
 	StorageMounts     []hostsMount
+	// VMCount is the number of VMs currently placed on this host.
+	// Refreshed by the cross-pollination in app.go's vmsLoadedMsg /
+	// hostsLoadedMsg handlers — both sides recompute the map so a
+	// fresh tab visit always sees an up-to-date count.
+	VMCount int
 }
 
 // hostsNIC mirrors the wire NetworkInterface ; field names match the
@@ -365,6 +370,7 @@ func hostsColumns() []table.Column {
 		{Title: "RACK", Width: 6},
 		{Title: "STATE", Width: 14},
 		{Title: "CONN", Width: 8},
+		{Title: "VMS", Width: 5},
 		{Title: "VERSION", Width: 10},
 		{Title: "DRIVERS", Width: 22},
 		{Title: "LAST-SEEN", Width: 20},
@@ -424,6 +430,19 @@ func (m *hostsModel) hostnameByUUID(uuid string) string {
 		}
 	}
 	return ""
+}
+
+// applyVMCounts stamps each in-memory row with the number of VMs
+// currently placed on it (UUID-keyed). Re-renders the table so the
+// new VMS column reflects the count without waiting for the next
+// hostsLoadedMsg. Missing UUIDs map to 0 (no VM placed).
+func (m *hostsModel) applyVMCounts(counts map[string]int) {
+	tableRows := make([]table.Row, 0, len(m.rows))
+	for i := range m.rows {
+		m.rows[i].VMCount = counts[m.rows[i].UUID]
+		tableRows = append(tableRows, m.rows[i].tableRow(m.theme, m.controlPlaneUUIDs))
+	}
+	m.table.SetRows(tableRows)
 }
 
 // applyHosts refreshes the in-memory rows + the underlying table.
@@ -532,6 +551,7 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	}
 	ver := dashEmpty(h.AgentVersion)
 	drivers := dashEmpty(formatDriverVersions(h.DriverVersions))
+	vms := strconv.Itoa(h.VMCount)
 	// HYP dropped : DRIVERS already carries each loaded driver's
 	// kind (e.g. "qemu:v0.6.0") so a separate column would be
 	// redundant. Hypervisor is still in the detail drawer for
@@ -545,6 +565,7 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 		dashEmpty(h.Rack),
 		state,
 		conn,
+		vms,
 		ver,
 		drivers,
 		last,

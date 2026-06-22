@@ -140,6 +140,10 @@ func NewThemeWith(p ThemePreset) Theme {
 		SidebarItem:       lipgloss.NewStyle().Foreground(p.Muted).PaddingLeft(2),
 		SidebarItemActive: lipgloss.NewStyle().Bold(true).Foreground(p.Primary),
 		SidebarSection:    lipgloss.NewStyle().Foreground(p.Muted).Italic(true).PaddingTop(1),
+		BodyBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Border).
+			Padding(0, 1),
 	}
 }
 
