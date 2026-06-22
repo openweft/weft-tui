@@ -41,6 +41,21 @@ type vmRow struct {
 	IP       string
 }
 
+// vmCountsByHost tallies how many of the given VM rows are placed
+// on each host UUID. Rows without a host_uuid don't count anywhere
+// (legacy / pre-placement VMs). Used by the Hosts tab to populate
+// the VMS column.
+func vmCountsByHost(rows []vmRow) map[string]int {
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		if r.HostUUID == "" {
+			continue
+		}
+		out[r.HostUUID]++
+	}
+	return out
+}
+
 // vmsModel owns the VMs tab : table, in-memory rows, modal flags for
 // stop-confirm + logs-viewport. The logs viewport is its own state
 // because once opened it captures j/k/scroll keys and Esc closes it

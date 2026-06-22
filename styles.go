@@ -39,6 +39,10 @@ type Theme struct {
 	SidebarItem       lipgloss.Style
 	SidebarItemActive lipgloss.Style
 	SidebarSection    lipgloss.Style
+	// BodyBox wraps the main body region in the same rounded
+	// border as SidebarBox so the two side-by-side panels read
+	// as a matched pair.
+	BodyBox lipgloss.Style
 }
 
 // NewTheme builds the default theme. Adaptive colours are passed as
@@ -99,5 +103,9 @@ func NewTheme() Theme {
 		SidebarItem:       lipgloss.NewStyle().Foreground(muted).PaddingLeft(2),
 		SidebarItemActive: lipgloss.NewStyle().Bold(true).Foreground(primary),
 		SidebarSection:    lipgloss.NewStyle().Foreground(muted).Italic(true).PaddingTop(1),
+		BodyBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1),
 	}
 }

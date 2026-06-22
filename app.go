@@ -186,7 +186,7 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 		// layout. The size handler above also iterates the map on
 		// every resize so subsequent terminal changes propagate.
 		if m.width > 0 {
-			applyResize(&rm.table, cfg.Columns, m.bodyWidth(), m.bodyHeight())
+			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-2)
 		}
 		m.resource[id] = rm
 	}
@@ -220,8 +220,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// occupies its own horizontal slot, so the body width must
 		// exclude it. Match bodyHeight()/bodyWidth() so applyResize
 		// + renderBody agree on the viewport.
-		h := m.bodyHeight()
-		bw := m.bodyWidth()
+		h := m.bodyHeight() - 2 // account for BodyBox border top+bottom
+		bw := m.bodyInnerWidth()
 		// Table widgets : resize BOTH height (to fill the viewport)
 		// AND column widths (proportionally to the declared widths
 		// in their original definitions — captured by the per-tab
@@ -304,6 +304,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// hosts cache so the resolved hostnames appear without
 			// waiting for the next ListVMs tick.
 			m.vms.refreshHostNames(m.hosts.hostnameByUUID)
+			// Cross-pollinate VM counts so the new hosts table
+			// reflects the prior VM listing's placement.
+			m.hosts.applyVMCounts(vmCountsByHost(m.vms.rows))
 		}
 		return m, nil
 
@@ -342,6 +345,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
 			m.vms.applyVMs(msg.resp, m.hosts.hostnameByUUID)
+			// Push fresh per-host counts to the hosts model so the
+			// "VMS" column reflects the new placement immediately —
+			// no need to wait for the next hostsLoadedMsg.
+			m.hosts.applyVMCounts(vmCountsByHost(m.vms.rows))
 		}
 		return m, nil
 
@@ -1050,23 +1057,41 @@ func (m Model) bodyHeight() int {
 }
 
 func (m Model) renderBody() string {
-	bw := m.bodyWidth()
+	// Body content gets the inner width — the BodyBox below wraps
+	// in a rounded border + 1-col horizontal padding, eating 4 cols
+	// total. Tables don't reflow on their own so the width budget
+	// has to be right at applyResize time, not at render.
+	inner := m.bodyInnerWidth()
+	var content string
 	switch m.active {
 	case tabHosts:
-		return m.hosts.View(bw)
+		content = m.hosts.View(inner)
 	case tabVMs:
-		return m.vms.View(bw)
+		content = m.vms.View(inner)
 	case tabProjects:
-		return m.projects.View(bw)
+		content = m.projects.View(inner)
 	case tabEvents:
-		return m.events.View(bw)
+		content = m.events.View(inner)
 	case tabResource:
 		if rm, ok := m.resource[m.currentResource]; ok {
-			return rm.View(bw)
+			content = rm.View(inner)
 		}
-		return ""
 	}
-	return ""
+	return m.theme.BodyBox.
+		Width(m.bodyWidth() - 2).
+		Height(m.bodyHeight() - 2).
+		Render(content)
+}
+
+// bodyInnerWidth is what the body content actually has to draw on,
+// once the BodyBox border (2 cols) + padding (2 cols) is subtracted
+// from bodyWidth. Tables use this for column width allocation.
+func (m Model) bodyInnerWidth() int {
+	w := m.bodyWidth() - 4
+	if w < 16 {
+		w = 16
+	}
+	return w
 }
 
 // bodyWidth is the horizontal slot the body region uses — total
