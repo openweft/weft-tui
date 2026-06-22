@@ -1089,20 +1089,23 @@ func TestAutoFetchClusterName_NilClient(t *testing.T) {
 }
 
 // TestClusterName_AppearsInTitle pins the v0.3.6 federation cue :
-// when m.clusterName is set, the rendered title includes it.
+// when m.clusterName is set, the sidebar header includes it.
+// (Title moved from the horizontal tab strip to the sidebar's top
+// section in v0.5.0 when the layout switched to a left-hand object-
+// type list.)
 func TestClusterName_AppearsInTitle(t *testing.T) {
 	m := New(&fakeClient{})
 	m.clusterName = "prod-eu"
 	m.width = 100
 	m.height = 30
-	title := m.renderTabs()
-	if !strings.Contains(title, "prod-eu") {
-		t.Errorf("title bar missing cluster name : %q", title)
+	side := m.renderSidebar()
+	if !strings.Contains(side, "prod-eu") {
+		t.Errorf("sidebar missing cluster name : %q", side)
 	}
 	m.clusterName = ""
-	title = m.renderTabs()
-	if strings.Contains(title, "·") {
-		t.Errorf("empty clusterName should not show the separator : %q", title)
+	side = m.renderSidebar()
+	if strings.Contains(side, "prod-eu") {
+		t.Errorf("sidebar should not show cluster name when unset : %q", side)
 	}
 }
 

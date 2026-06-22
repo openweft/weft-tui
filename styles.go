@@ -29,6 +29,16 @@ type Theme struct {
 	// active theme instead of the hard-coded violet that used to
 	// ship across hosts/vms/projects/resources tables.
 	SelectedRow lipgloss.Style
+	// SidebarBox is the rounded-border container that wraps the
+	// vertical object-type list on the left of the main view.
+	SidebarBox lipgloss.Style
+	// SidebarItem renders one inactive entry in the sidebar
+	// (muted foreground). SidebarItemActive renders the selected
+	// entry (primary hue + bold + leading bullet). SidebarSection
+	// styles the section header ("core" / "resources").
+	SidebarItem       lipgloss.Style
+	SidebarItemActive lipgloss.Style
+	SidebarSection    lipgloss.Style
 }
 
 // NewTheme builds the default theme. Adaptive colours are passed as
@@ -82,5 +92,12 @@ func NewTheme() Theme {
 		BadgeWarn: lipgloss.NewStyle().Foreground(warn).Bold(true),
 		BadgeBad:  lipgloss.NewStyle().Foreground(bad).Bold(true),
 		Faint:     lipgloss.NewStyle().Foreground(muted),
+		SidebarBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(1, 1),
+		SidebarItem:       lipgloss.NewStyle().Foreground(muted).PaddingLeft(2),
+		SidebarItemActive: lipgloss.NewStyle().Bold(true).Foreground(primary),
+		SidebarSection:    lipgloss.NewStyle().Foreground(muted).Italic(true).PaddingTop(1),
 	}
 }
