@@ -23,10 +23,11 @@ import (
 func main() {
 	defaultSocket := defaultSocketPath()
 	var (
-		socket      = flag.String("socket", defaultSocket, "Weft agent Unix socket path")
+		socket      = flag.String("socket", "", "Weft agent Unix socket path (legacy single-host mode ; overrides clusters.hcl when set). Default $HOME/.weft/weft.sock falls back from the config file when no clusters are configured.")
 		sshSocket   = flag.String("ssh-socket", "", "Weft agent SSH socket path (enables SSH auth) ; default $HOME/.weft/weft-ssh.sock when --ssh-key is set")
 		sshKey      = flag.String("ssh-key", "", "SSH private key for authentication (enables SSH transport)")
 		clusterName = flag.String("cluster-name", os.Getenv("WEFT_CLUSTER_NAME"), "Federated cluster name shown in the title bar (e.g. 'prod-eu'). Defaults to $WEFT_CLUSTER_NAME ; empty hides the suffix.")
+		clusterFlag = flag.String("cluster", os.Getenv("WEFT_TUI_CLUSTER"), "Cluster to connect to (matches a `cluster \"<name>\" {}` block in clusters.hcl). Default = first cluster in the file.")
 	)
 	flag.Parse()
 
@@ -36,16 +37,47 @@ func main() {
 		*sshSocket = defaultSSHSocketPath()
 	}
 
-	var opts []weftclient.Option
-	if *sshKey != "" {
-		opts = append(opts, weftclient.WithSSH(*sshSocket, *sshKey))
+	// Endpoint resolution priority :
+	//   1. --socket set → legacy single-host mode (existing flow).
+	//   2. clusters.hcl present + has cluster → resilient connector
+	//      cycles through endpoints + auto-fails over on disconnect.
+	//   3. fallback → defaultSocket ($HOME/.weft/weft.sock).
+	var (
+		client weftv1.WeftAgentClient
+		closer func() error
+	)
+	if *socket == "" {
+		if endpoints, err := resolveEndpointsFromConfig(*clusterFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
+		} else if len(endpoints) > 0 {
+			rc, err := NewResilientClient(endpoints)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
+				os.Exit(1)
+			}
+			client = rc
+			closer = rc.Close
+		}
 	}
-	client, conn, err := weftclient.Client(*socket, opts...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "weft-tui: dial weft agent at %s: %v\n", *socket, err)
-		os.Exit(1)
+	if client == nil {
+		// Legacy single-socket path.
+		target := *socket
+		if target == "" {
+			target = defaultSocket
+		}
+		var opts []weftclient.Option
+		if *sshKey != "" {
+			opts = append(opts, weftclient.WithSSH(*sshSocket, *sshKey))
+		}
+		c, conn, err := weftclient.Client(target, opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "weft-tui: dial weft agent at %s: %v\n", target, err)
+			os.Exit(1)
+		}
+		client = c
+		closer = conn.Close
 	}
-	defer conn.Close()
+	defer closer()
 
 	model := New(client)
 	// One GetClusterInfo RPC covers both the title-bar cluster name
