@@ -191,11 +191,36 @@ func (m *hostsModel) detailView(width int) string {
 		b.WriteString(m.theme.StatusKey.Render(padKey("Network")))
 		b.WriteString("\n")
 		for _, n := range r.NetworkInterfaces {
+			// Header line : interface name + its link summary
+			// (speed + operstate + mtu). The address details
+			// follow indented on subsequent lines so a multi-IP
+			// NIC reads as a vertical list, not a long wrap.
 			b.WriteString("  ")
 			b.WriteString(m.theme.StatusKey.Render(padKey(n.Name)))
 			b.WriteString("  ")
-			b.WriteString(formatNIC(n))
+			b.WriteString(nicHeader(n))
 			b.WriteString("\n")
+			for _, ip := range n.IPv4CIDRs {
+				b.WriteString("    ")
+				b.WriteString(m.theme.StatusKey.Render(padKey("ipv4")))
+				b.WriteString("  ")
+				b.WriteString(ip)
+				b.WriteString("\n")
+			}
+			for _, ip := range n.IPv6CIDRs {
+				b.WriteString("    ")
+				b.WriteString(m.theme.StatusKey.Render(padKey("ipv6")))
+				b.WriteString("  ")
+				b.WriteString(ip)
+				b.WriteString("\n")
+			}
+			if n.MAC != "" {
+				b.WriteString("    ")
+				b.WriteString(m.theme.StatusKey.Render(padKey("mac")))
+				b.WriteString("  ")
+				b.WriteString(n.MAC)
+				b.WriteString("\n")
+			}
 		}
 	}
 	if len(r.StorageMounts) > 0 {
@@ -215,23 +240,16 @@ func (m *hostsModel) detailView(width int) string {
 	return m.theme.HelpBox.Render(b.String())
 }
 
-// formatNIC renders one NIC for the drawer : "1Gbps up · IPv4 ip/cidr · MAC xx · MTU 1500".
-// Empty / zero fields are skipped so loopback-ish virtual NICs read clean.
-func formatNIC(n hostsNIC) string {
-	parts := make([]string, 0, 4)
+// nicHeader renders the per-NIC summary line (speed · state · mtu).
+// The address details (ipv4 / ipv6 / mac) land on their own lines
+// below, indented, so a NIC with multiple IPs reads as a vertical
+// list rather than a wrapped paragraph.
+func nicHeader(n hostsNIC) string {
+	parts := make([]string, 0, 3)
 	if n.LinkSpeedMbps > 0 {
 		parts = append(parts, formatMbps(n.LinkSpeedMbps)+" "+dashEmpty(n.OperState))
 	} else if n.OperState != "" {
 		parts = append(parts, n.OperState)
-	}
-	if len(n.IPv4CIDRs) > 0 {
-		parts = append(parts, "ipv4 "+strings.Join(n.IPv4CIDRs, ","))
-	}
-	if len(n.IPv6CIDRs) > 0 {
-		parts = append(parts, "ipv6 "+strings.Join(n.IPv6CIDRs, ","))
-	}
-	if n.MAC != "" {
-		parts = append(parts, "mac "+n.MAC)
 	}
 	if n.MTU > 0 {
 		parts = append(parts, "mtu "+strconv.Itoa(int(n.MTU)))
