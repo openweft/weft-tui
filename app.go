@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	weftv1 "github.com/openweft/weft-proto"
@@ -185,6 +186,8 @@ func tickRefresh() tea.Cmd {
 // plus any side-effect Cmd to schedule (RPC, tick, quit).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -890,6 +893,154 @@ func (m Model) bodyWidth() int {
 		w = 20
 	}
 	return w
+}
+
+// sidebarHitRows maps each rendered Y coordinate inside the sidebar
+// to the tab the operator activates by clicking that row. Mirrors
+// renderSidebar's WriteString sequence exactly :
+//
+//   row 0 : border top
+//   row 1 : padding top
+//   row 2 : "weft" (Title line 1)
+//   row 3 : cluster name (only when m.clusterName != "")
+//   row 4 : blank ("\n" after Title.Render)
+//   row 5 : blank (SidebarSection.PaddingTop adds a leading blank)
+//   row 6 : "core" header
+//   row 7 : Hosts
+//   row 8 : VMs
+//   row 9 : Projects
+//   row 10 : Events
+//
+// When the cluster name is empty, every "after Title" row shifts
+// up by one. The map only carries clickable rows ; the rest stays
+// unmapped so non-matching clicks fall through.
+func (m Model) sidebarHitRows() map[int]tab {
+	out := make(map[int]tab, len(tabLabels))
+	y := 2 // border + top padding
+	y++   // "weft"
+	if m.clusterName != "" {
+		y++
+	}
+	y++ // explicit "\n" after Title.Render
+	y++ // SidebarSection.PaddingTop leading blank
+	y++ // "core" header line itself
+	for i := range tabLabels {
+		out[y] = tab(i)
+		y++
+	}
+	return out
+}
+
+// handleMouse routes mouse events to the right surface :
+//
+//   - Left-click in the sidebar column → switch the active tab to
+//     whichever entry the operator clicked. Triggers the same
+//     loadCmd path the keyboard shortcut does.
+//   - Left-click in the body column → move the bubbles/table
+//     cursor to the clicked row (when the active tab owns a table).
+//   - Wheel up/down anywhere over the body → scroll the table's
+//     viewport one row (matches every other terminal table widget).
+//
+// Motion + non-left buttons are ignored — they would only add
+// noise (hover highlighting isn't worth the redraw cost here).
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollActiveTable(-1)
+		return m, nil
+	case tea.MouseButtonWheelDown:
+		m.scrollActiveTable(1)
+		return m, nil
+	case tea.MouseButtonLeft:
+		// Single click = MouseActionPress ; we only act on the
+		// release so motion-while-pressed doesn't drag-select.
+		if msg.Action != tea.MouseActionRelease {
+			return m, nil
+		}
+		if msg.X < sidebarWidth {
+			if t, ok := m.sidebarHitRows()[msg.Y]; ok {
+				return m.activateTab(t)
+			}
+			return m, nil
+		}
+		// Body click → table-row cursor move. The bubbles/table
+		// reserves 1 line for the header and 1 line at the top
+		// for the styled border ; the first data row sits at
+		// rendered row 2 (relative to the body region's top).
+		row := msg.Y - 2
+		if row < 0 {
+			return m, nil
+		}
+		m.setActiveTableCursor(row)
+		return m, nil
+	}
+	return m, nil
+}
+
+// activateTab switches the model to the requested tab + arms the
+// corresponding refresh Cmd so the table reflects current data
+// immediately. Single source of truth shared with the keyboard
+// "1..4" shortcuts (callers in handleKey use the same path).
+func (m Model) activateTab(t tab) (tea.Model, tea.Cmd) {
+	m.active = t
+	switch t {
+	case tabHosts:
+		return m, loadHostsCmd(m.client)
+	case tabVMs:
+		return m, loadVMsCmd(m.client)
+	case tabProjects:
+		return m, loadProjectsCmd(m.client)
+	}
+	return m, nil
+}
+
+// scrollActiveTable bumps the cursor of the active tab's table by
+// delta rows. -1 = wheel up, +1 = wheel down. No-op for tabs that
+// don't own a table (events viewport scrolls itself via its own
+// mouse handling — bubbles/viewport supports the wheel natively).
+func (m *Model) scrollActiveTable(delta int) {
+	tbl := m.activeTable()
+	if tbl == nil {
+		return
+	}
+	cursor := tbl.Cursor() + delta
+	if cursor < 0 {
+		cursor = 0
+	}
+	tbl.SetCursor(cursor)
+}
+
+// setActiveTableCursor moves the bubbles/table cursor on the active
+// tab to a specific row. row is 0-indexed against the visible rows
+// (the table widget translates that into the underlying data row).
+func (m *Model) setActiveTableCursor(row int) {
+	tbl := m.activeTable()
+	if tbl == nil {
+		return
+	}
+	if row < 0 {
+		row = 0
+	}
+	tbl.SetCursor(row)
+}
+
+// activeTable returns the bubbles/table widget the active tab
+// owns, or nil for tabs that don't have one (events). Pointer
+// receiver so callers mutate the widget in place.
+func (m *Model) activeTable() *table.Model {
+	switch m.active {
+	case tabHosts:
+		return &m.hosts.table
+	case tabVMs:
+		return &m.vms.table
+	case tabProjects:
+		return &m.projects.table
+	case tabResource:
+		if rm, ok := m.resource[m.currentResource]; ok {
+			return &rm.table
+		}
+	}
+	return nil
 }
 
 func (m Model) renderStatusBar() string {
