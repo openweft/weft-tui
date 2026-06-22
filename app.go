@@ -107,6 +107,17 @@ type Model struct {
 	// selected row. Click an item or press its shortcut to fire ;
 	// Esc closes.
 	menu contextMenu
+
+	// sidebarW is the dynamic sidebar width in cells. Starts at
+	// defaultSidebarWidth ; the operator can resize it by clicking
+	// on the right-edge column and dragging. Persisted across
+	// renders within a session ; reset on next launch.
+	sidebarW int
+
+	// dragSidebar is true while the operator is currently dragging
+	// the sidebar boundary. Set on MouseActionPress at the boundary
+	// column, cleared on MouseActionRelease.
+	dragSidebar bool
 }
 
 // contextMenu holds the right-click menu state. items is rebuilt on
@@ -892,7 +903,24 @@ func (m Model) View() string {
 // / "SSH Keys (catalogue)" — all ~17-20 chars) fits with its
 // shortcut prefix + the active "▸" marker. 28 col leaves a body
 // width of 52 col on an 80-col terminal — still readable.
-const sidebarWidth = 28
+// defaultSidebarWidth is the initial sidebar slot. The operator can
+// drag the right-edge column to resize ; the new value lives on
+// Model.sidebarW. Floor at minSidebarWidth so labels stay legible ;
+// cap at maxSidebarWidth so the body region keeps a usable budget.
+const (
+	defaultSidebarWidth = 28
+	minSidebarWidth     = 16
+	maxSidebarWidth     = 60
+)
+
+// sidebarWidth returns the current sidebar width, honoring the
+// operator's drag-resize when set or falling back to the default.
+func (m Model) sidebarWidth() int {
+	if m.sidebarW > 0 {
+		return m.sidebarW
+	}
+	return defaultSidebarWidth
+}
 
 // sidebarEntry is one clickable row in the sidebar. Either tab is
 // set (a core tab) or resourceID is set (a catalogue resource).
@@ -1013,7 +1041,7 @@ func (m Model) renderSidebar() string {
 		}
 	}
 	return m.theme.SidebarBox.
-		Width(sidebarWidth - 2).
+		Width(m.sidebarWidth() - 2).
 		Height(m.bodyHeight()).
 		Render(b.String())
 }
@@ -1099,7 +1127,7 @@ func (m Model) bodyInnerWidth() int {
 // stays renderable on absurdly narrow terminals (caller will then
 // scroll horizontally inside the table).
 func (m Model) bodyWidth() int {
-	w := m.width - sidebarWidth
+	w := m.width - m.sidebarWidth()
 	if w < 20 {
 		w = 20
 	}
@@ -1343,7 +1371,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Outside the body region : ignore. The sidebar has its
 		// own click semantics ; right-clicking it would be
 		// surprising.
-		if msg.X < sidebarWidth {
+		if msg.X < m.sidebarWidth() {
 			m.menu.open = false
 			return m, nil
 		}
@@ -1364,12 +1392,54 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.menu.cursor = 0
 		return m, nil
 	case tea.MouseButtonLeft:
+		// Sidebar drag-resize : a Press exactly on the sidebar's
+		// right-border column enters drag mode ; Motion updates the
+		// width live ; Release exits. Has to be checked BEFORE the
+		// "release ignored" guard so motion events get through.
+		sw := m.sidebarWidth()
+		boundaryX := sw - 1
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if msg.X == boundaryX {
+				m.dragSidebar = true
+				return m, nil
+			}
+		case tea.MouseActionMotion:
+			if m.dragSidebar {
+				newW := msg.X + 1
+				if newW < minSidebarWidth {
+					newW = minSidebarWidth
+				}
+				if newW > maxSidebarWidth {
+					newW = maxSidebarWidth
+				}
+				if m.width > 0 && newW > m.width-20 {
+					newW = m.width - 20
+				}
+				m.sidebarW = newW
+				// Re-resize tables to the new body width.
+				h := m.bodyHeight() - 2
+				bw := m.bodyInnerWidth()
+				applyResize(&m.hosts.table, hostsColumns(), bw, h)
+				applyResize(&m.vms.table, vmsColumns(), bw, h)
+				applyResize(&m.projects.table, projectsColumns(), bw, h)
+				for _, rm := range m.resource {
+					applyResize(&rm.table, rm.cfg.Columns, bw, h)
+				}
+				return m, nil
+			}
+		case tea.MouseActionRelease:
+			if m.dragSidebar {
+				m.dragSidebar = false
+				return m, nil
+			}
+		}
 		// Single click = MouseActionPress ; we only act on the
 		// release so motion-while-pressed doesn't drag-select.
 		if msg.Action != tea.MouseActionRelease {
 			return m, nil
 		}
-		if msg.X < sidebarWidth {
+		if msg.X < sw {
 			if e, ok := m.sidebarHitRows()[msg.Y]; ok {
 				m.menu.open = false
 				if e.resourceID != "" {
