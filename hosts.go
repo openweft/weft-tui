@@ -212,6 +212,7 @@ func hostsColumns() []table.Column {
 		{Title: "STATE", Width: 14},
 		{Title: "CONN", Width: 8},
 		{Title: "VERSION", Width: 10},
+		{Title: "DRIVERS", Width: 18},
 		{Title: "LAST-SEEN", Width: 20},
 	}
 }
@@ -346,6 +347,7 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 		cp = "*"
 	}
 	ver := dashEmpty(h.AgentVersion)
+	drivers := dashEmpty(formatDriverVersions(h.DriverVersions))
 	return table.Row{
 		cp,
 		uuidShort,
@@ -356,8 +358,28 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 		state,
 		conn,
 		ver,
+		drivers,
 		last,
 	}
+}
+
+// formatDriverVersions condenses a kind→version map into one cell-
+// friendly string : "vz:v0.5.0 qemu:v0.6.0", kinds sorted so the
+// rendering is stable across refreshes. Empty map → "".
+func formatDriverVersions(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	kinds := make([]string, 0, len(m))
+	for k := range m {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, k+":"+m[k])
+	}
+	return strings.Join(parts, " ")
 }
 
 // View renders the hosts tab. The confirm-remove modal AND the
