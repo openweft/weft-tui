@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,10 +40,12 @@ type ResilientClient struct {
 
 	endpoints []Endpoint
 
-	mu     sync.RWMutex
-	active Endpoint
-	conn   *grpc.ClientConn
-	idx    int
+	mu        sync.RWMutex
+	active    Endpoint
+	conn      *grpc.ClientConn
+	tunnelCmd *exec.Cmd // ssh -fNL process owning the local tunnel socket
+	tunnelSock string   // local Unix socket path that maps to the remote
+	idx       int
 
 	// onSwitch fires after every successful endpoint swap. nil = no-op.
 	onSwitch func(active Endpoint)
@@ -89,33 +93,121 @@ func (r *ResilientClient) Active() Endpoint {
 	return r.active
 }
 
-// Close terminates the heartbeat goroutine + the underlying conn.
-// Idempotent.
+// Close terminates the heartbeat goroutine + the underlying conn,
+// plus the SSH tunnel child if any.
 func (r *ResilientClient) Close() error {
 	r.stopOnce.Do(func() { close(r.stop) })
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var err error
 	if r.conn != nil {
-		return r.conn.Close()
+		err = r.conn.Close()
 	}
-	return nil
+	if r.tunnelSock != "" {
+		_ = killTunnel(r.tunnelCmd, r.tunnelSock)
+	}
+	return err
 }
 
-// dial wraps weftclient.Client with the per-endpoint transport
-// fields. Local socket : pass it as the dial target. SSH tunnel :
-// use WithSSH(ssh_socket, key) so weft-client opens its own
-// per-RPC SSH session.
-func (r *ResilientClient) dial(e Endpoint) (weftv1.WeftAgentClient, *grpc.ClientConn, error) {
-	var opts []weftclient.Option
-	target := e.Socket
-	if e.SSHKey != "" && e.Address != "" {
-		opts = append(opts, weftclient.WithSSH(e.SSHSocket, e.SSHKey))
-		target = e.Address
+// dial reaches the endpoint's weft agent. Three transports :
+//
+//   * e.Socket alone : the operator has a pre-existing tunnel
+//     (`ssh -L /tmp/weft.sock:…`) — just dial the local socket.
+//   * e.Address + e.SSHSocket : the TUI forks `ssh -fNL <tmp>:<remote>`
+//     to establish a fresh tunnel itself, then dials the local
+//     temp socket. The forked process gets terminated on the next
+//     dial / on Close so failover cleans up after itself.
+//   * legacy weftclient.WithSSH path (e.Address + e.SSHKey but no
+//     remote socket spec) : preserved for the in-process SSH-server
+//     model the agent exposes locally, not used by the operator
+//     scenario.
+//
+// Returns (client, conn, tunnelCmd, tunnelSocket, error). tunnelCmd
+// is nil for the legacy + local-socket paths.
+func (r *ResilientClient) dial(e Endpoint) (weftv1.WeftAgentClient, *grpc.ClientConn, *exec.Cmd, string, error) {
+	// Local socket : already-tunneled by the operator.
+	if e.Address == "" && e.Socket != "" {
+		c, conn, err := weftclient.Client(e.Socket)
+		return c, conn, nil, "", err
 	}
-	if target == "" {
-		return nil, nil, fmt.Errorf("endpoint %s has neither socket nor SSH transport configured", e.Name)
+	// Remote SSH : fork `ssh -fNL <local>:<remote>` and dial the local
+	// socket. The fork keeps the tunnel alive across multiple RPCs
+	// without per-call SSH handshake cost.
+	if e.Address != "" && e.SSHSocket != "" {
+		localSock, cmd, err := openSSHTunnel(e)
+		if err != nil {
+			return nil, nil, nil, "", err
+		}
+		c, conn, err := weftclient.Client(localSock)
+		if err != nil {
+			_ = killTunnel(cmd, localSock)
+			return nil, nil, nil, "", err
+		}
+		return c, conn, cmd, localSock, nil
 	}
-	return weftclient.Client(target, opts...)
+	// Legacy in-process SSH transport (agent's local SSH server).
+	if e.Address != "" && e.SSHKey != "" {
+		c, conn, err := weftclient.Client(e.Address, weftclient.WithSSH(e.SSHSocket, e.SSHKey))
+		return c, conn, nil, "", err
+	}
+	return nil, nil, nil, "", fmt.Errorf("endpoint %s : neither socket nor SSH target configured", e.Name)
+}
+
+// openSSHTunnel forks `ssh -fN -L <local-unix-sock>:<remote-unix-sock>
+// <user>@<host>` and returns the path of the local socket once it
+// appears (ssh writes it from its child once the forward is bound).
+// 5-second budget so a dead host doesn't stall the TUI's startup.
+func openSSHTunnel(e Endpoint) (string, *exec.Cmd, error) {
+	// Local socket path : per-endpoint slug so multiple tunnels can
+	// coexist in /tmp without clashing.
+	slug := e.Name
+	if slug == "" {
+		slug = "weft"
+	}
+	localSock := filepath.Join(os.TempDir(), fmt.Sprintf("weft-tui-%s-%d.sock", slug, os.Getpid()))
+	_ = os.Remove(localSock)
+	args := []string{
+		"-fN",
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "StreamLocalBindUnlink=yes",
+		"-o", "ServerAliveInterval=10",
+		"-o", "ServerAliveCountMax=3",
+		"-L", localSock + ":" + e.SSHSocket,
+	}
+	if e.SSHKey != "" {
+		args = append(args, "-i", e.SSHKey, "-o", "IdentitiesOnly=yes")
+	}
+	args = append(args, e.Address)
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", nil, fmt.Errorf("ssh -fNL: %w", err)
+	}
+	// Wait for the socket to materialise (ssh -f returns BEFORE the
+	// child process has bound the forward in some cases).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(localSock); err == nil {
+			return localSock, cmd, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "", nil, fmt.Errorf("ssh tunnel %s : socket %s never appeared", e.Address, localSock)
+}
+
+// killTunnel removes the local socket + signals any lingering ssh
+// child via `pkill` matching the socket path (the `-fN` ssh has
+// no easily-reachable PID since the parent returned). Best-effort.
+func killTunnel(_ *exec.Cmd, localSock string) error {
+	if localSock == "" {
+		return nil
+	}
+	// ssh -fN forks a detached child whose argv contains the socket
+	// path — pkill -f matches it uniquely.
+	exec.Command("pkill", "-f", localSock).Run()
+	_ = os.Remove(localSock)
+	return nil
 }
 
 // connectNext walks the endpoint list starting at idx+1, dialling
@@ -128,20 +220,25 @@ func (r *ResilientClient) connectNext() error {
 	for tries := 0; tries < len(r.endpoints); tries++ {
 		i := (r.idx + tries) % len(r.endpoints)
 		ep := r.endpoints[i]
-		client, conn, err := r.dial(ep)
+		client, conn, tunCmd, tunSock, err := r.dial(ep)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "weft-tui: dial %s: %v\n", ep, err)
 			lastErr = err
 			continue
 		}
-		oldConn := r.conn
+		oldConn, oldCmd, oldSock := r.conn, r.tunnelCmd, r.tunnelSock
 		r.active = ep
 		r.WeftAgentClient = client
 		r.conn = conn
+		r.tunnelCmd = tunCmd
+		r.tunnelSock = tunSock
 		r.idx = i
 		r.failures.Store(0)
 		if oldConn != nil {
 			_ = oldConn.Close()
+		}
+		if oldSock != "" {
+			_ = killTunnel(oldCmd, oldSock)
 		}
 		if r.onSwitch != nil {
 			r.onSwitch(ep)
