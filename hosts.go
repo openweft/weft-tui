@@ -50,6 +50,12 @@ type hostsModel struct {
 	rows    []hostsRow
 	loading bool
 	err     error
+	// localCPUUID is the UUID of the host serving this TUI session's
+	// gRPC socket — populated at boot from GetClusterInfo (see
+	// main.go's autoFetchClusterInfo). Used in tableRow to mark the
+	// "CP" column for the row matching it. Empty (no CP info) → no
+	// row is marked.
+	localCPUUID string
 
 	// confirmRemove is non-empty when the user pressed `x` ; holds
 	// the UUID of the host pending confirmation. While set, the
@@ -162,15 +168,27 @@ func humanAge(t time.Time) string {
 // Declared widths act as WEIGHTS the responsive layer (responsive.go)
 // distributes proportionally on every WindowSizeMsg ; keep them
 // relative to each other rather than absolute.
+//
+// "CP" is the control-plane marker : `*` when the host's UUID
+// matches the local_host_uuid returned by GetClusterInfo (the host
+// serving this TUI session's gRPC socket), `—` otherwise. Lets
+// operators see which host is the CP they're driving without
+// chasing the socket path.
+//
+// STATE / CONN dropped the badge styling that was hiding their
+// content under narrow terminals — the bubbles/table truncator
+// gets confused when ANSI sequences land inside the cut window.
+// Plain text + wider weights restores visibility.
 func hostsColumns() []table.Column {
 	return []table.Column{
+		{Title: "CP", Width: 3},
 		{Title: "UUID", Width: 8},
 		{Title: "HOSTNAME", Width: 20},
 		{Title: "AZ", Width: 6},
 		{Title: "RACK", Width: 6},
 		{Title: "HYP", Width: 10},
-		{Title: "STATE", Width: 10},
-		{Title: "CONN", Width: 5},
+		{Title: "STATE", Width: 14},
+		{Title: "CONN", Width: 8},
 		{Title: "LAST-SEEN", Width: 20},
 	}
 }
@@ -255,7 +273,7 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 			hr.LastSeen = time.Unix(0, h.LastSeenAtUnixNs)
 		}
 		rows = append(rows, hr)
-		tableRows = append(tableRows, hr.tableRow(m.theme))
+		tableRows = append(tableRows, hr.tableRow(m.theme, m.localCPUUID))
 	}
 	m.rows = rows
 	m.table.SetRows(tableRows)
@@ -265,28 +283,24 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 }
 
 // tableRow renders one hostsRow as the slice of strings the
-// bubbles/table widget consumes. The state column gets a badge tint
-// based on cordoned / down / active so operators can scan a long list
-// at a glance.
-func (h hostsRow) tableRow(theme Theme) table.Row {
+// bubbles/table widget consumes. PLAIN text — no inline ANSI/badge
+// styles in the cells. bubbles/table's truncator measures visible
+// width via lipgloss but several widget versions still cut ANSI
+// sequences mid-byte under narrow terminals, blanking the cell.
+// Plain values are width-safe.
+//
+// localCPUUID, when non-empty, marks the CP host's row with "*"
+// in the leading "CP" column. Tip from main.go : the UUID comes
+// from GetClusterInfo.local_host_uuid (the agent serving this
+// TUI session's socket).
+func (h hostsRow) tableRow(theme Theme, localCPUUID string) table.Row {
 	state := dashEmpty(h.State)
 	if h.Cordoned {
-		state = theme.BadgeWarn.Render(state + "*")
-	} else {
-		switch strings.ToLower(h.State) {
-		case "active":
-			state = theme.BadgeOK.Render(state)
-		case "down":
-			state = theme.BadgeBad.Render(state)
-		case "draining":
-			state = theme.BadgeWarn.Render(state)
-		}
+		state = state + " (cordoned)"
 	}
 	conn := "no"
 	if h.Connected {
-		conn = theme.BadgeOK.Render("yes")
-	} else {
-		conn = theme.BadgeBad.Render("no")
+		conn = "yes"
 	}
 	last := "—"
 	if !h.LastSeen.IsZero() {
@@ -296,7 +310,12 @@ func (h hostsRow) tableRow(theme Theme) table.Row {
 	if len(uuidShort) > 8 {
 		uuidShort = uuidShort[:8]
 	}
+	cp := "—"
+	if localCPUUID != "" && h.UUID == localCPUUID {
+		cp = "*"
+	}
 	return table.Row{
+		cp,
 		uuidShort,
 		dashEmpty(h.Hostname),
 		dashEmpty(h.AZ),
