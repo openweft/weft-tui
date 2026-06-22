@@ -42,6 +42,7 @@ var paletteBindings = []helpBinding{
 
 var hostsBindings = []helpBinding{
 	{"↑/↓ or j/k", "move selection"},
+	{"Enter", "open detail drawer (UUID, AZ/rack, hypervisor, state, last-seen)"},
 	{"c", "cordon selected host"},
 	{"u", "uncordon selected host"},
 	{"d", "set state → down (drain prep)"},
