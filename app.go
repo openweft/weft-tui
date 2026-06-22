@@ -997,6 +997,14 @@ func (m Model) bodyWidth() int {
 	return w
 }
 
+// entryClickable returns true when the sidebar entry has an actual
+// target (core tab or catalogue resource). The "more" rows (palette
+// / help, shortcuts "^P" / "?") are pure keyboard hints — clicking
+// them is a no-op so we skip them in the hit map.
+func entryClickable(e sidebarEntry) bool {
+	return e.resourceID != "" || (e.shortcut != "^P" && e.shortcut != "?")
+}
+
 // sidebarHitRows maps each rendered Y coordinate inside the sidebar
 // to the target the operator activates by clicking that row. Rather
 // than predict lipgloss border / padding / section padding offsets
@@ -1012,10 +1020,12 @@ func (m Model) sidebarHitRows() map[int]sidebarEntry {
 	out := make(map[int]sidebarEntry, 32)
 	for _, sec := range sidebarSections() {
 		for _, e := range sec.Entries {
-			// "more" rows (palette / help) have no real target ;
-			// skip them so a click doesn't no-op silently — we
-			// reserve those keys for the keyboard.
-			if e.tab == 0 && e.resourceID == "" {
+			// "more" rows (palette / help) have non-targetable
+			// shortcuts ; skip them so a click doesn't no-op
+			// silently. Core entries (tab=0 for Hosts via iota,
+			// shortcut "1") + resource entries (shortcut "·")
+			// stay clickable.
+			if !entryClickable(e) {
 				continue
 			}
 			needle := e.shortcut + " " + e.label

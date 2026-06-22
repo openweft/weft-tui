@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	weftv1 "github.com/openweft/weft-proto"
 )
@@ -139,16 +140,31 @@ func listDNSZones(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]a
 }
 
 func listDNSRecords(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
-	resp, err := c.ListDNSRecords(ctx, &weftv1.ListDNSRecordsRequest{})
+	// ListDNSRecordsRequest.zone_uuid is required server-side ; the
+	// catalogue view wants every record across every zone, so we
+	// fan out : list zones first, then per-zone List, then concat.
+	// Per-zone failures are reported in-row (so a single broken
+	// zone doesn't blank the whole view) rather than aborted.
+	zones, err := c.ListDNSZones(ctx, &weftv1.ListDNSZonesRequest{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list dns zones: %w", err)
 	}
-	out := make([]map[string]any, 0, len(resp.Records))
-	for _, r := range resp.Records {
-		out = append(out, map[string]any{
-			"uuid": r.Uuid, "name": r.Name, "type": r.Type,
-			"value": r.Value, "zone_uuid": r.ZoneUuid,
-		})
+	out := make([]map[string]any, 0, 16)
+	for _, z := range zones.Zones {
+		resp, err := c.ListDNSRecords(ctx, &weftv1.ListDNSRecordsRequest{ZoneUuid: z.Uuid})
+		if err != nil {
+			out = append(out, map[string]any{
+				"uuid": "", "name": "<error>", "type": "",
+				"value": err.Error(), "zone_uuid": z.Uuid,
+			})
+			continue
+		}
+		for _, r := range resp.Records {
+			out = append(out, map[string]any{
+				"uuid": r.Uuid, "name": r.Name, "type": r.Type,
+				"value": r.Value, "zone_uuid": r.ZoneUuid,
+			})
+		}
 	}
 	return out, nil
 }
