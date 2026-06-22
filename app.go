@@ -160,11 +160,7 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 		// layout. The size handler above also iterates the map on
 		// every resize so subsequent terminal changes propagate.
 		if m.width > 0 {
-			h := m.height - 4
-			if h < 5 {
-				h = 5
-			}
-			applyResize(&rm.table, cfg.Columns, m.width, h)
+			applyResize(&rm.table, cfg.Columns, m.bodyWidth(), m.bodyHeight())
 		}
 		m.resource[id] = rm
 	}
@@ -192,33 +188,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Reserve 3 lines : tabs row + blank + status bar.
-		h := msg.Height - 4
-		if h < 5 {
-			h = 5
-		}
+		// Reserve : status bar (2 lines) + 1 line breather + sidebar
+		// occupies its own horizontal slot, so the body width must
+		// exclude it. Match bodyHeight()/bodyWidth() so applyResize
+		// + renderBody agree on the viewport.
+		h := m.bodyHeight()
+		bw := m.bodyWidth()
 		// Table widgets : resize BOTH height (to fill the viewport)
 		// AND column widths (proportionally to the declared widths
 		// in their original definitions — captured by the per-tab
 		// modeOriginalColumns helpers below). The bubbles/table
 		// widget doesn't reflow on its own, so this is the single
 		// source of responsive layout for the whole TUI.
-		applyResize(&m.hosts.table, hostsColumns(), msg.Width, h)
-		applyResize(&m.vms.table, vmsColumns(), msg.Width, h)
-		applyResize(&m.projects.table, projectsColumns(), msg.Width, h)
+		applyResize(&m.hosts.table, hostsColumns(), bw, h)
+		applyResize(&m.vms.table, vmsColumns(), bw, h)
+		applyResize(&m.projects.table, projectsColumns(), bw, h)
 		// Every previously-opened resource list inherits the new
 		// size too. Lazily-created ones (palette opens a fresh
 		// resource later) pick it up via newResourceListModel
 		// reading m.width/m.height at construction time.
 		for _, rm := range m.resource {
-			applyResize(&rm.table, rm.cfg.Columns, msg.Width, h)
+			applyResize(&rm.table, rm.cfg.Columns, bw, h)
 		}
 		// The events viewport reserves one line for the header.
 		evpH := h - 1
 		if evpH < 3 {
 			evpH = 3
 		}
-		m.events.vp.Width = msg.Width
+		m.events.vp.Width = bw
 		m.events.vp.Height = evpH
 		// Logs viewport gets the same window minus the title + hint.
 		logH := h - 2
@@ -776,16 +773,18 @@ func (m Model) handleEventsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) 
 	return m, cmd
 }
 
-// View renders the full UI : header (tabs), body (active tab), status
-// bar. Help overlay supersedes the body when open.
+// View renders the full UI : sidebar (object types) on the left,
+// body (active tab content) on the right, status bar at the
+// bottom. Help overlay supersedes the body when open.
 func (m Model) View() string {
 	if m.showHelp {
 		return m.theme.helpView(m.width)
 	}
-	header := m.renderTabs()
+	sidebar := m.renderSidebar()
 	body := m.renderBody()
+	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, body)
 	status := m.renderStatusBar()
-	parts := []string{header, body}
+	parts := []string{main}
 	if m.palette.open {
 		parts = append(parts, m.palette.View(m.theme, m.width))
 	}
@@ -793,45 +792,104 @@ func (m Model) View() string {
 	return strings.Join(parts, "\n")
 }
 
-func (m Model) renderTabs() string {
-	parts := make([]string, 0, len(tabLabels)+1)
+// sidebarWidth is the fixed horizontal slot the sidebar occupies,
+// including border + padding. Tuned so the longest entry
+// ("Projects" / "Networks" / "Volumes" + the 1-9 shortcut prefix)
+// fits without wrap on a typical narrow terminal (80 col → 60 col
+// remaining for the body table — still readable).
+const sidebarWidth = 22
+
+// renderSidebar draws the vertical object-type list on the left.
+// Numeric shortcuts (1..4) match the legacy tab order so muscle
+// memory carries over ; the palette (Ctrl-P) still drives the
+// "resource" entry when the operator wants one of the catalogue
+// views (Networks / Volumes / Plugins / …).
+func (m Model) renderSidebar() string {
+	var b strings.Builder
+	head := "weft"
+	if m.clusterName != "" {
+		head += "\n" + m.clusterName
+	}
+	b.WriteString(m.theme.Title.Render(head))
+	b.WriteString("\n")
+	b.WriteString(m.theme.SidebarSection.Render("core"))
+	b.WriteString("\n")
 	for i, label := range tabLabels {
-		text := fmt.Sprintf("%d %s", i+1, label)
-		if tab(i) == m.active {
-			parts = append(parts, m.theme.ActiveTab.Render(text))
-		} else {
-			parts = append(parts, m.theme.Tab.Render(text))
-		}
+		active := tab(i) == m.active
+		shortcut := fmt.Sprintf("%d", i+1)
+		b.WriteString(sidebarRow(m.theme, shortcut, label, active))
+		b.WriteString("\n")
 	}
 	if m.active == tabResource && m.currentResource != "" {
-		parts = append(parts, m.theme.ActiveTab.Render(": "+m.currentResource))
+		b.WriteString(m.theme.SidebarSection.Render("resource"))
+		b.WriteString("\n")
+		b.WriteString(sidebarRow(m.theme, "·", m.currentResource, true))
+		b.WriteString("\n")
 	}
-	head := "weft tui"
-	if m.clusterName != "" {
-		head += " · " + m.clusterName
+	b.WriteString(m.theme.SidebarSection.Render("more"))
+	b.WriteString("\n")
+	b.WriteString(m.theme.SidebarItem.Render("^P palette"))
+	b.WriteString("\n")
+	b.WriteString(m.theme.SidebarItem.Render("?  help"))
+	return m.theme.SidebarBox.
+		Width(sidebarWidth - 2).
+		Height(m.bodyHeight()).
+		Render(b.String())
+}
+
+// sidebarRow renders one entry : "<shortcut> <label>". Active rows
+// pick up the SidebarItemActive style ; inactive rows pad with two
+// spaces so the label column lines up regardless of selection.
+func sidebarRow(theme Theme, shortcut, label string, active bool) string {
+	if active {
+		return theme.SidebarItemActive.Render("▸ " + shortcut + " " + label)
 	}
-	title := m.theme.Title.Render(head)
-	tabs := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-	return lipgloss.JoinHorizontal(lipgloss.Top, title, tabs)
+	return theme.SidebarItem.Render(shortcut + " " + label)
+}
+
+// bodyHeight is the vertical slot the body + sidebar region uses.
+// Subtracts the status bar (border + content = 2 lines) from the
+// terminal height ; matches the legacy "Reserve 3 lines : tabs row
+// + blank + status bar" budget so per-tab tables still get the
+// same usable rows.
+func (m Model) bodyHeight() int {
+	h := m.height - 4
+	if h < 5 {
+		h = 5
+	}
+	return h
 }
 
 func (m Model) renderBody() string {
+	bw := m.bodyWidth()
 	switch m.active {
 	case tabHosts:
-		return m.hosts.View(m.width)
+		return m.hosts.View(bw)
 	case tabVMs:
-		return m.vms.View(m.width)
+		return m.vms.View(bw)
 	case tabProjects:
-		return m.projects.View(m.width)
+		return m.projects.View(bw)
 	case tabEvents:
-		return m.events.View(m.width)
+		return m.events.View(bw)
 	case tabResource:
 		if rm, ok := m.resource[m.currentResource]; ok {
-			return rm.View(m.width)
+			return rm.View(bw)
 		}
 		return ""
 	}
 	return ""
+}
+
+// bodyWidth is the horizontal slot the body region uses — total
+// terminal width minus the sidebar slot. Floors at 20 so the table
+// stays renderable on absurdly narrow terminals (caller will then
+// scroll horizontally inside the table).
+func (m Model) bodyWidth() int {
+	w := m.width - sidebarWidth
+	if w < 20 {
+		w = 20
+	}
+	return w
 }
 
 func (m Model) renderStatusBar() string {
