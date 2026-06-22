@@ -101,6 +101,31 @@ type Model struct {
 	// Status bar.
 	statusMsg string
 	statusErr bool
+
+	// Context menu (right-click). When open, the status bar is
+	// replaced with a strip of available actions for the currently-
+	// selected row. Click an item or press its shortcut to fire ;
+	// Esc closes.
+	menu contextMenu
+}
+
+// contextMenu holds the right-click menu state. items is rebuilt on
+// every right-click based on the active tab + the selected row, so
+// the menu always reflects what's actionable. cursor highlights one
+// item for keyboard navigation ; left-arrow / right-arrow move it.
+type contextMenu struct {
+	open   bool
+	items  []contextMenuItem
+	cursor int
+}
+
+// contextMenuItem is one row in the menu. action is the tea.Cmd to
+// dispatch on activation (Enter / click / shortcut). Build lazily
+// so each click captures the current selection.
+type contextMenuItem struct {
+	label    string
+	shortcut string
+	action   tea.Cmd
 }
 
 // New builds a fresh top-level model. Pass nil for client in tests
@@ -282,6 +307,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case openHostDetailMsg:
+		row, ok := m.hosts.rowByUUID(msg.uuid)
+		if !ok {
+			return m, nil
+		}
+		_ = row
+		m.hosts.detailOpen = true
+		m.hosts.detailUUID = msg.uuid
+		return m, nil
+
+	case openHostConfirmRemoveMsg:
+		m.hosts.confirmRemove = msg.uuid
+		m.hosts.confirmHostname = msg.hostname
+		return m, nil
+
+	case openVMConfirmStopMsg:
+		m.vms.confirmStop = msg.name
+		m.vms.confirmProject = msg.project
+		return m, nil
+
 	case hostActionMsg:
 		if msg.err != nil {
 			m.setError(fmt.Sprintf("%s %s failed: %s", msg.action, msg.host, msg.err))
@@ -396,6 +441,37 @@ func (m Model) forwardToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 // goes through the normal global / tab-specific routes.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+
+	// --- Context menu first : navigation captures everything. ---
+	if m.menu.open {
+		switch key {
+		case "esc", "ctrl+c":
+			m.menu.open = false
+			return m, nil
+		case "up", "k":
+			if m.menu.cursor > 0 {
+				m.menu.cursor--
+			}
+			return m, nil
+		case "down", "j":
+			if m.menu.cursor < len(m.menu.items)-1 {
+				m.menu.cursor++
+			}
+			return m, nil
+		case "enter":
+			return m.menuActivate()
+		}
+		// Any matching item shortcut triggers it directly.
+		for _, it := range m.menu.items {
+			if it.shortcut == key {
+				m.menu.open = false
+				return m, it.action
+			}
+		}
+		// Other keys fall through to the regular tab handlers so
+		// muscle-memory shortcuts (refresh, etc.) still work even
+		// with the menu open.
+	}
 
 	// --- Modals first : they capture every key until resolved. ---
 
@@ -786,12 +862,20 @@ func (m Model) View() string {
 	sidebar := m.renderSidebar()
 	body := m.renderBody()
 	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, body)
-	status := m.renderStatusBar()
 	parts := []string{main}
 	if m.palette.open {
 		parts = append(parts, m.palette.View(m.theme, m.width))
 	}
-	parts = append(parts, status)
+	if m.menu.open {
+		// Context menu pre-empts the status bar : the items + the
+		// nav hint are more useful right after a right-click than
+		// the timestamp / refresh chrome. Esc / item-click /
+		// shortcut all close the menu, after which the status bar
+		// returns on the next render.
+		parts = append(parts, m.renderContextMenu())
+	} else {
+		parts = append(parts, m.renderStatusBar())
+	}
 	return strings.Join(parts, "\n")
 }
 
@@ -997,6 +1081,140 @@ func (m Model) bodyWidth() int {
 	return w
 }
 
+// renderContextMenu draws the menu strip that replaces the status
+// bar when m.menu.open. One line per item, prefixed with "▸ " on
+// the selected row + the shortcut key in brackets. Footer reminds
+// the operator of the keyboard navigation contract.
+func (m Model) renderContextMenu() string {
+	if !m.menu.open || len(m.menu.items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, it := range m.menu.items {
+		if i == m.menu.cursor {
+			b.WriteString(m.theme.SidebarItemActive.Render("▸ " + it.label + "  [" + it.shortcut + "]"))
+		} else {
+			b.WriteString(m.theme.SidebarItem.Render(it.label + "  [" + it.shortcut + "]"))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(m.theme.Faint.Render("↑↓ select · ↵ run · click · Esc close"))
+	return m.theme.HelpBox.Width(m.bodyWidth() - 4).Render(b.String())
+}
+
+// menuHitRow translates a click Y coordinate to a menu item index
+// when the click lands inside the rendered menu's vertical extent.
+// Returns (idx, false) when y is outside the menu, so the caller
+// closes the menu instead of dispatching.
+//
+// Layout (relative to terminal Y) :
+//   row N-K to N-1 : menu items + footer + border
+// where N is the terminal height + the menu has K=len(items)+1
+// content rows + 2 border rows (HelpBox has padding 1,2).
+func (m Model) menuHitRow(y int) (int, bool) {
+	if !m.menu.open {
+		return 0, false
+	}
+	// Menu spans the bottom of the screen. The HelpBox style adds
+	// 1 border + 1 padding row top & bottom. So content rows live
+	// in [m.height - bottomChrome - len(items) - 1, m.height - bottomChrome - 2).
+	// Simpler : render the menu, count its lines, and map by index.
+	rendered := m.renderContextMenu()
+	lines := strings.Split(rendered, "\n")
+	menuTop := m.height - len(lines)
+	rel := y - menuTop
+	if rel < 0 || rel >= len(lines) {
+		return 0, false
+	}
+	// Within the menu : the first 2 lines are border+padding, then
+	// one line per item, then footer, then border+padding.
+	itemY := rel - 2
+	if itemY < 0 || itemY >= len(m.menu.items) {
+		return 0, false
+	}
+	return itemY, true
+}
+
+// menuActivate dispatches the currently-selected menu item's action
+// + closes the menu. Returns (m, action-cmd). Defensive : guards
+// against an out-of-range cursor + a nil action.
+func (m Model) menuActivate() (tea.Model, tea.Cmd) {
+	if !m.menu.open || m.menu.cursor < 0 || m.menu.cursor >= len(m.menu.items) {
+		m.menu.open = false
+		return m, nil
+	}
+	cmd := m.menu.items[m.menu.cursor].action
+	m.menu.open = false
+	return m, cmd
+}
+
+// buildContextMenu assembles the right-click action list for the
+// currently-active tab + selected row. Returns an empty list when
+// nothing is selected, so callers can no-op cleanly. Each item's
+// action is a pre-built tea.Cmd capturing the selection at click
+// time — moving the cursor afterwards doesn't change what the menu
+// fires.
+func (m Model) buildContextMenu() []contextMenuItem {
+	switch m.active {
+	case tabHosts:
+		uuid := m.hosts.selectedUUID()
+		host := m.hosts.selectedHostname()
+		if uuid == "" {
+			return nil
+		}
+		row, ok := m.hosts.selectedRow()
+		if !ok {
+			return nil
+		}
+		items := []contextMenuItem{
+			{label: "Detail", shortcut: "↵", action: openHostDetailCmd(uuid)},
+		}
+		if row.Cordoned {
+			items = append(items, contextMenuItem{label: "Uncordon", shortcut: "u",
+				action: cordonCmd(m.client, uuid, host, false)})
+		} else {
+			items = append(items, contextMenuItem{label: "Cordon", shortcut: "c",
+				action: cordonCmd(m.client, uuid, host, true)})
+		}
+		items = append(items, contextMenuItem{label: "Mark Down", shortcut: "d",
+			action: setStateCmd(m.client, uuid, host, "down")})
+		items = append(items, contextMenuItem{label: "Remove…", shortcut: "x",
+			action: openHostConfirmRemoveCmd(uuid, host)})
+		return items
+	case tabVMs:
+		name, project := m.vms.selected()
+		if name == "" {
+			return nil
+		}
+		return []contextMenuItem{
+			{label: "Start", shortcut: "s", action: startVMCmd(m.client, name, project)},
+			{label: "Restart", shortcut: "R", action: restartVMCmd(m.client, name, project)},
+			{label: "Stop…", shortcut: "S", action: openVMConfirmStopCmd(name, project)},
+			{label: "Logs", shortcut: "l", action: loadVMLogsCmd(m.client, name, project)},
+		}
+	}
+	return nil
+}
+
+// openHostDetailCmd / openHostConfirmRemoveCmd / openVMConfirmStopCmd
+// are no-arg tea.Cmds that just emit a tagged message the Update
+// loop interprets to flip a modal flag on the right sub-model.
+// Keeps buildContextMenu pure (no model mutation) so the View / Cmd
+// boundaries stay clean.
+type openHostDetailMsg struct{ uuid string }
+type openHostConfirmRemoveMsg struct{ uuid, hostname string }
+type openVMConfirmStopMsg struct{ name, project string }
+
+func openHostDetailCmd(uuid string) tea.Cmd {
+	return func() tea.Msg { return openHostDetailMsg{uuid: uuid} }
+}
+func openHostConfirmRemoveCmd(uuid, hostname string) tea.Cmd {
+	return func() tea.Msg { return openHostConfirmRemoveMsg{uuid: uuid, hostname: hostname} }
+}
+func openVMConfirmStopCmd(name, project string) tea.Cmd {
+	return func() tea.Msg { return openVMConfirmStopMsg{name: name, project: project} }
+}
+
 // entryClickable returns true when the sidebar entry has an actual
 // target (core tab or catalogue resource). The "more" rows (palette
 // / help, shortcuts "^P" / "?") are pure keyboard hints — clicking
@@ -1091,6 +1309,35 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseButtonWheelDown:
 		m.scrollActiveTable(1)
 		return m, nil
+	case tea.MouseButtonRight:
+		// Right-click acts on the release event so a click-drag-
+		// release doesn't open the menu off-row.
+		if msg.Action != tea.MouseActionRelease {
+			return m, nil
+		}
+		// Outside the body region : ignore. The sidebar has its
+		// own click semantics ; right-clicking it would be
+		// surprising.
+		if msg.X < sidebarWidth {
+			m.menu.open = false
+			return m, nil
+		}
+		// Move the table cursor to the clicked row first so the
+		// menu reflects the right selection — then build the menu.
+		row := msg.Y - 2
+		if row < 0 {
+			return m, nil
+		}
+		m.setActiveTableCursor(row)
+		items := m.buildContextMenu()
+		if len(items) == 0 {
+			m.menu.open = false
+			return m, nil
+		}
+		m.menu.open = true
+		m.menu.items = items
+		m.menu.cursor = 0
+		return m, nil
 	case tea.MouseButtonLeft:
 		// Single click = MouseActionPress ; we only act on the
 		// release so motion-while-pressed doesn't drag-select.
@@ -1099,12 +1346,23 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if msg.X < sidebarWidth {
 			if e, ok := m.sidebarHitRows()[msg.Y]; ok {
+				m.menu.open = false
 				if e.resourceID != "" {
 					cmd := m.switchToResource(e.resourceID)
 					return m, cmd
 				}
 				return m.activateTab(e.tab)
 			}
+			return m, nil
+		}
+		// Context menu open : map the click to a menu item.
+		if m.menu.open {
+			if y, ok := m.menuHitRow(msg.Y); ok {
+				m.menu.cursor = y
+				return m.menuActivate()
+			}
+			// Click outside the menu lines closes it.
+			m.menu.open = false
 			return m, nil
 		}
 		// Body click → table-row cursor move. The bubbles/table
