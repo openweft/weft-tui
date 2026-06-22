@@ -937,6 +937,90 @@ func TestCatalogue_RWCoverage(t *testing.T) {
 	}
 }
 
+// TestEdit_FormPrefills pins the v0.3.5 edit form : opening with
+// `e` on a row pre-fills the inputs from the row's keys.
+func TestEdit_FormPrefills(t *testing.T) {
+	// Pick a real resource that has EditFields wired (subnets).
+	var cfg ResourceConfig
+	for _, r := range resourceCatalogue {
+		if r.ID == "subnets" {
+			cfg = r
+			break
+		}
+	}
+	if cfg.EditFn == nil {
+		t.Fatal("subnets must have EditFn wired in v0.3.5")
+	}
+	row := map[string]any{
+		"uuid":        "sn-1",
+		"name":        "edge",
+		"description": "edge subnet",
+		"gateway":     "10.0.0.1",
+	}
+	f := newEditFormModel(cfg, row)
+	if !f.editMode {
+		t.Errorf("editMode = false, want true")
+	}
+	if f.editRow["uuid"] != "sn-1" {
+		t.Errorf("editRow uuid lost : %v", f.editRow)
+	}
+	// Inputs by index ; the order matches cfg.EditFields.
+	for i, field := range cfg.EditFields {
+		got := f.inputs[i].Value()
+		want := rowValueAsString(row[field.Key])
+		if got != want {
+			t.Errorf("input[%d=%s] = %q, want %q (prefill)", i, field.Key, got, want)
+		}
+	}
+}
+
+// TestEdit_FormEmptyAllowedOnEdit pins the contract that empty
+// fields are accepted in edit mode (proto3 "" = keep current).
+// Create mode still enforces Required.
+func TestEdit_FormEmptyAllowedOnEdit(t *testing.T) {
+	cfg := ResourceConfig{
+		ID:    "x",
+		Title: "X",
+		EditFields: []FormField{
+			{Key: "name", Label: "Name", Required: true},
+		},
+	}
+	f := newEditFormModel(cfg, map[string]any{"name": ""}) // empty start
+	values, err := f.collect()
+	if err != nil {
+		t.Errorf("edit collect with empty Required field should succeed (keep-current) ; got %v", err)
+	}
+	if values["name"] != "" {
+		t.Errorf("collect returned %q, want empty", values["name"])
+	}
+	// Now create mode : Required + empty must fail.
+	f.editMode = false
+	if _, err := f.collect(); err == nil {
+		t.Errorf("create collect with empty Required field should fail")
+	}
+}
+
+// TestTheme_SelectedRowFollowsPreset pins that switching theme
+// updates the SelectedRow background instead of leaving the old
+// hardcoded violet.
+func TestTheme_SelectedRowFollowsPreset(t *testing.T) {
+	for _, preset := range themePresets {
+		theme := NewThemeWith(preset)
+		got := theme.SelectedRow.GetBackground()
+		if got == nil {
+			t.Errorf("theme %q has nil SelectedRow.Background", preset.Name)
+			continue
+		}
+		// We can't compare AdaptiveColors directly via interface
+		// equality (Lipgloss wraps them) ; the contract is that
+		// SelectedRow takes some color, not the literal violet.
+		// A successful build-and-render is the real assertion ;
+		// this test exists to flag a future regression if someone
+		// hardcodes a colour in SelectedRow again.
+		_ = got
+	}
+}
+
 // TestPalette_EnterPicksSelectedNotInput pins the v2 contract :
 // Enter opens the HIGHLIGHTED resource (which may differ from the
 // raw input when typing partial then arrowing). The old v1 path

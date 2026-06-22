@@ -34,6 +34,7 @@ var paletteBindings = []helpBinding{
 	{"Esc", "cancel"},
 	{"Enter (table row)", "open the detail drawer (every field of the row)"},
 	{"n", "new — open the create form (when wired for that resource)"},
+	{"e", "edit — open the update form pre-filled from the selected row (when wired)"},
 	{"d", "delete selected row (asks for confirmation)"},
 	{"Tab (form)", "cycle to next field"},
 	{"Enter (form)", "submit"},

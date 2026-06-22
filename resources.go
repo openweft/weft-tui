@@ -48,6 +48,17 @@ type ResourceConfig struct {
 	// or webui for that resource).
 	CreateFields []FormField
 	CreateFn     CreateFn
+	// EditFields + EditFn opt the resource into the `e` edit flow.
+	// Same shape as CreateFields/CreateFn except the form is pre-
+	// filled from the highlighted row and EditFn receives the row
+	// alongside the user-edited values. Field.Key in EditFields
+	// matches the row's map key for the pre-fill ; if a row doesn't
+	// carry that key the input starts empty. Leave both nil to keep
+	// the resource Create+Delete-only (still drops into the CLI for
+	// edits — useful for resources whose Update RPCs we haven't
+	// wired yet).
+	EditFields []FormField
+	EditFn     EditFn
 }
 
 // ResourceAction is one operator-triggered command (delete, rename,
@@ -103,10 +114,7 @@ func newResourceListModel(theme Theme, client weftv1.WeftAgentClient, cfg Resour
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
-	s.Selected = s.Selected.
-		Foreground(lipgloss.Color("0")).
-		Background(lipgloss.AdaptiveColor{Light: "#A78BFA", Dark: "#A78BFA"}).
-		Bold(true)
+	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	return &ResourceListModel{theme: theme, client: client, cfg: cfg, table: tbl, loading: true}
 }
@@ -209,6 +217,29 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		}
 		return m, nil
 
+	case editSubmitMsg:
+		if msg.cfg != m.cfg.ID || m.create == nil {
+			return m, nil
+		}
+		cfg := m.cfg
+		client := m.client
+		row := msg.row
+		values := msg.values
+		// Same lifecycle as createSubmitMsg : close the form, fire
+		// the RPC in the returned Cmd, surface success / error via
+		// resourceActionMsg so the status bar + list-refresh path
+		// stays unified.
+		m.create = nil
+		return m, func() tea.Msg {
+			if cfg.EditFn == nil {
+				return resourceActionMsg{cfg: cfg.ID, action: "edit", err: fmt.Errorf("edit not wired")}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			out, err := cfg.EditFn(ctx, client, row, values)
+			return resourceActionMsg{cfg: cfg.ID, action: "edit", row: row, msg: out, err: err}
+		}
+
 	case tea.KeyMsg:
 		// Create form open : route every key to the form's
 		// textinput / submit logic. The form itself emits the
@@ -290,6 +321,15 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		}
 		if key == "n" && m.cfg.CreateFn != nil {
 			m.create = newCreateFormModel(m.cfg)
+			return m, nil
+		}
+		if key == "e" && m.cfg.EditFn != nil {
+			row := m.selected()
+			if row == nil {
+				m.err = fmt.Errorf("no row selected")
+				return m, nil
+			}
+			m.create = newEditFormModel(m.cfg, row)
 			return m, nil
 		}
 		if key == "enter" {

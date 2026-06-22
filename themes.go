@@ -126,6 +126,13 @@ func NewThemeWith(p ThemePreset) Theme {
 		BadgeWarn: lipgloss.NewStyle().Foreground(p.Warn).Bold(true),
 		BadgeBad:  lipgloss.NewStyle().Foreground(p.Bad).Bold(true),
 		Faint:     lipgloss.NewStyle().Foreground(p.Muted),
+		// Selected row : primary as background, dark foreground for
+		// contrast. Same colour the title bar / active tab use so the
+		// whole UI reads as a coherent palette.
+		SelectedRow: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("0")).
+			Background(p.Primary).
+			Bold(true),
 	}
 }
 
