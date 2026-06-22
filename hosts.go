@@ -194,14 +194,19 @@ func (m *hostsModel) detailView(width int) string {
 			// Header line : interface name + link status only
 			// (speed + operstate). Every other attribute lands
 			// on its own indented line below, in a stable order :
-			// mac > ipv4 > ipv6 > mtu. mac first matches `ip a`'s
-			// convention (link/ether on the line right after the
-			// interface name) so operators can scan the column.
+			// mtu > mac > ipv4 > ipv6.
 			b.WriteString("  ")
 			b.WriteString(m.theme.StatusKey.Render(padKey(n.Name)))
 			b.WriteString("  ")
 			b.WriteString(nicHeader(n))
 			b.WriteString("\n")
+			if n.MTU > 0 {
+				b.WriteString("    ")
+				b.WriteString(m.theme.StatusKey.Render(padKey("mtu")))
+				b.WriteString("  ")
+				b.WriteString(strconv.Itoa(int(n.MTU)))
+				b.WriteString("\n")
+			}
 			if n.MAC != "" {
 				b.WriteString("    ")
 				b.WriteString(m.theme.StatusKey.Render(padKey("mac")))
@@ -221,13 +226,6 @@ func (m *hostsModel) detailView(width int) string {
 				b.WriteString(m.theme.StatusKey.Render(padKey("ipv6")))
 				b.WriteString("  ")
 				b.WriteString(ip)
-				b.WriteString("\n")
-			}
-			if n.MTU > 0 {
-				b.WriteString("    ")
-				b.WriteString(m.theme.StatusKey.Render(padKey("mtu")))
-				b.WriteString("  ")
-				b.WriteString(strconv.Itoa(int(n.MTU)))
 				b.WriteString("\n")
 			}
 		}
