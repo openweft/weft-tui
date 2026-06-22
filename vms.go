@@ -69,8 +69,10 @@ type vmsModel struct {
 	lastRefresh time.Time
 }
 
-func newVMsModel(theme Theme) vmsModel {
-	cols := []table.Column{
+// vmsColumns returns the VMs table's canonical column layout (see
+// hostsColumns for the responsive-layout contract).
+func vmsColumns() []table.Column {
+	return []table.Column{
 		{Title: "NAME", Width: 18},
 		{Title: "PROJECT", Width: 14},
 		{Title: "HOST", Width: 10},
@@ -79,6 +81,10 @@ func newVMsModel(theme Theme) vmsModel {
 		{Title: "CPU", Width: 4},
 		{Title: "MEM-MB", Width: 8},
 	}
+}
+
+func newVMsModel(theme Theme) vmsModel {
+	cols := vmsColumns()
 	tbl := table.New(
 		table.WithColumns(cols),
 		table.WithFocused(true),

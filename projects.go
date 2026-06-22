@@ -56,13 +56,19 @@ type projectsModel struct {
 	lastRefresh time.Time
 }
 
-func newProjectsModel(theme Theme) projectsModel {
-	cols := []table.Column{
+// projectsColumns returns the Projects table's canonical column
+// layout (see hostsColumns for the responsive-layout contract).
+func projectsColumns() []table.Column {
+	return []table.Column{
 		{Title: "NAME", Width: 24},
 		{Title: "UUID", Width: 10},
 		{Title: "CREATED", Width: 20},
 		{Title: "VMS", Width: 6},
 	}
+}
+
+func newProjectsModel(theme Theme) projectsModel {
+	cols := projectsColumns()
 	tbl := table.New(
 		table.WithColumns(cols),
 		table.WithFocused(true),

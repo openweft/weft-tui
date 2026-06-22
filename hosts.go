@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,11 +57,113 @@ type hostsModel struct {
 	confirmRemove   string
 	confirmHostname string
 
+	// detailOpen + detailUUID drive the inspector drawer that pops
+	// up on `Enter`. Mirrors the ResourceListModel's detail flow so
+	// the operator can read every field of a host (properties,
+	// uptime, version, etc.) without dropping into the CLI.
+	detailOpen bool
+	detailUUID string
+
 	lastRefresh time.Time
 }
 
-func newHostsModel(theme Theme) hostsModel {
-	cols := []table.Column{
+// selectedRow returns the currently-highlighted hostsRow + true, or
+// (zero, false) when the table is empty. Used by the detail drawer.
+func (m *hostsModel) selectedRow() (hostsRow, bool) {
+	if len(m.rows) == 0 {
+		return hostsRow{}, false
+	}
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.rows) {
+		return hostsRow{}, false
+	}
+	return m.rows[idx], true
+}
+
+// rowByUUID looks up a host by UUID — used by the detail drawer's
+// re-render path so a refresh that lands between Enter and the next
+// frame doesn't lose the focus row.
+func (m *hostsModel) rowByUUID(uuid string) (hostsRow, bool) {
+	for _, r := range m.rows {
+		if r.UUID == uuid {
+			return r, true
+		}
+	}
+	return hostsRow{}, false
+}
+
+// detailView renders the inspector drawer for the row identified by
+// detailUUID. Every field of hostsRow appears on its own line ;
+// state + connection get the same badge tint as the table cells.
+func (m *hostsModel) detailView(width int) string {
+	r, ok := m.rowByUUID(m.detailUUID)
+	if !ok {
+		return m.theme.HelpBox.Render("(host no longer in roster — press Esc to close)")
+	}
+	var b strings.Builder
+	b.WriteString(m.theme.Title.Render("Host " + dashEmpty(r.Hostname)))
+	b.WriteString("\n\n")
+	pairs := []struct{ k, v string }{
+		{"UUID", r.UUID},
+		{"Hostname", dashEmpty(r.Hostname)},
+		{"AZ", dashEmpty(r.AZ)},
+		{"Rack", dashEmpty(r.Rack)},
+		{"Hypervisor", dashEmpty(r.Hypervisor)},
+		{"State", r.State},
+		{"Cordoned", boolBadge(r.Cordoned, m.theme)},
+		{"Connected", boolBadge(r.Connected, m.theme)},
+		{"Last seen", lastSeenString(r.LastSeen)},
+	}
+	for _, p := range pairs {
+		b.WriteString(m.theme.StatusKey.Render(padKey(p.k)))
+		b.WriteString("  ")
+		b.WriteString(p.v)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.theme.Faint.Render("Esc / Enter close · c cordon · u uncordon · d state→down · x remove"))
+	return m.theme.HelpBox.Render(b.String())
+}
+
+// boolBadge renders true/false with the active theme's badge styles.
+func boolBadge(v bool, theme Theme) string {
+	if v {
+		return theme.BadgeOK.Render("yes")
+	}
+	return theme.BadgeBad.Render("no")
+}
+
+// lastSeenString formats a last-seen timestamp ; zero → "—".
+func lastSeenString(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Format("2006-01-02 15:04:05") + " (" + humanAge(t) + ")"
+}
+
+// humanAge renders a coarse "Nm ago" / "Nh ago" / "Nd ago" string —
+// no time.Until below seconds, no fractional units. Enough resolution
+// for the operator to spot a stale heartbeat.
+func humanAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return strconv.Itoa(int(d/time.Minute)) + "m ago"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d/time.Hour)) + "h ago"
+	default:
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d ago"
+	}
+}
+
+// hostsColumns returns the Hosts table's canonical column layout.
+// Declared widths act as WEIGHTS the responsive layer (responsive.go)
+// distributes proportionally on every WindowSizeMsg ; keep them
+// relative to each other rather than absolute.
+func hostsColumns() []table.Column {
+	return []table.Column{
 		{Title: "UUID", Width: 8},
 		{Title: "HOSTNAME", Width: 20},
 		{Title: "AZ", Width: 6},
@@ -70,6 +173,10 @@ func newHostsModel(theme Theme) hostsModel {
 		{Title: "CONN", Width: 5},
 		{Title: "LAST-SEEN", Width: 20},
 	}
+}
+
+func newHostsModel(theme Theme) hostsModel {
+	cols := hostsColumns()
 	tbl := table.New(
 		table.WithColumns(cols),
 		table.WithFocused(true),
@@ -201,9 +308,17 @@ func (h hostsRow) tableRow(theme Theme) table.Row {
 	}
 }
 
-// View renders the hosts tab. The confirm-remove modal, when active,
-// is drawn instead of the table — saves us a separate overlay path.
+// View renders the hosts tab. The confirm-remove modal AND the
+// detail drawer, when active, are drawn instead of the table —
+// saves us a separate overlay path. Order : detail drawer first
+// (since it's the read-only inspector ; if a confirm-remove
+// arrived underneath, Esc closes the drawer + the remove modal
+// becomes visible on the next render).
 func (m hostsModel) View(width int) string {
+	if m.detailOpen {
+		body := m.detailView(width)
+		return lipgloss.Place(width, lipgloss.Height(body), lipgloss.Center, lipgloss.Top, body)
+	}
 	if m.confirmRemove != "" {
 		body := fmt.Sprintf(
 			"Remove host %s (%s) ?\n\nThis does NOT stop its VMs — drain first.\n\n  y   confirm\n  n   cancel",

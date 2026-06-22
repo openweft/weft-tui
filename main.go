@@ -20,9 +20,10 @@ import (
 func main() {
 	defaultSocket := defaultSocketPath()
 	var (
-		socket    = flag.String("socket", defaultSocket, "Weft agent Unix socket path")
-		sshSocket = flag.String("ssh-socket", "", "Weft agent SSH socket path (enables SSH auth) ; default $HOME/.weft/weft-ssh.sock when --ssh-key is set")
-		sshKey    = flag.String("ssh-key", "", "SSH private key for authentication (enables SSH transport)")
+		socket      = flag.String("socket", defaultSocket, "Weft agent Unix socket path")
+		sshSocket   = flag.String("ssh-socket", "", "Weft agent SSH socket path (enables SSH auth) ; default $HOME/.weft/weft-ssh.sock when --ssh-key is set")
+		sshKey      = flag.String("ssh-key", "", "SSH private key for authentication (enables SSH transport)")
+		clusterName = flag.String("cluster-name", os.Getenv("WEFT_CLUSTER_NAME"), "Federated cluster name shown in the title bar (e.g. 'prod-eu'). Defaults to $WEFT_CLUSTER_NAME ; empty hides the suffix.")
 	)
 	flag.Parse()
 
@@ -44,6 +45,7 @@ func main() {
 	defer conn.Close()
 
 	model := New(client)
+	model.clusterName = *clusterName
 	prog := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
