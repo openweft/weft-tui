@@ -191,15 +191,24 @@ func (m *hostsModel) detailView(width int) string {
 		b.WriteString(m.theme.StatusKey.Render(padKey("Network")))
 		b.WriteString("\n")
 		for _, n := range r.NetworkInterfaces {
-			// Header line : interface name + its link summary
-			// (speed + operstate + mtu). The address details
-			// follow indented on subsequent lines so a multi-IP
-			// NIC reads as a vertical list, not a long wrap.
+			// Header line : interface name + link status only
+			// (speed + operstate). Every other attribute lands
+			// on its own indented line below, in a stable order :
+			// mac > ipv4 > ipv6 > mtu. mac first matches `ip a`'s
+			// convention (link/ether on the line right after the
+			// interface name) so operators can scan the column.
 			b.WriteString("  ")
 			b.WriteString(m.theme.StatusKey.Render(padKey(n.Name)))
 			b.WriteString("  ")
 			b.WriteString(nicHeader(n))
 			b.WriteString("\n")
+			if n.MAC != "" {
+				b.WriteString("    ")
+				b.WriteString(m.theme.StatusKey.Render(padKey("mac")))
+				b.WriteString("  ")
+				b.WriteString(n.MAC)
+				b.WriteString("\n")
+			}
 			for _, ip := range n.IPv4CIDRs {
 				b.WriteString("    ")
 				b.WriteString(m.theme.StatusKey.Render(padKey("ipv4")))
@@ -214,11 +223,11 @@ func (m *hostsModel) detailView(width int) string {
 				b.WriteString(ip)
 				b.WriteString("\n")
 			}
-			if n.MAC != "" {
+			if n.MTU > 0 {
 				b.WriteString("    ")
-				b.WriteString(m.theme.StatusKey.Render(padKey("mac")))
+				b.WriteString(m.theme.StatusKey.Render(padKey("mtu")))
 				b.WriteString("  ")
-				b.WriteString(n.MAC)
+				b.WriteString(strconv.Itoa(int(n.MTU)))
 				b.WriteString("\n")
 			}
 		}
@@ -240,24 +249,17 @@ func (m *hostsModel) detailView(width int) string {
 	return m.theme.HelpBox.Render(b.String())
 }
 
-// nicHeader renders the per-NIC summary line (speed · state · mtu).
-// The address details (ipv4 / ipv6 / mac) land on their own lines
-// below, indented, so a NIC with multiple IPs reads as a vertical
-// list rather than a wrapped paragraph.
+// nicHeader renders the per-NIC summary : link speed + operstate
+// only. MAC / IPs / MTU each get their own line below — see the
+// drawer renderer in detailView.
 func nicHeader(n hostsNIC) string {
-	parts := make([]string, 0, 3)
-	if n.LinkSpeedMbps > 0 {
-		parts = append(parts, formatMbps(n.LinkSpeedMbps)+" "+dashEmpty(n.OperState))
-	} else if n.OperState != "" {
-		parts = append(parts, n.OperState)
+	switch {
+	case n.LinkSpeedMbps > 0:
+		return formatMbps(n.LinkSpeedMbps) + " " + dashEmpty(n.OperState)
+	case n.OperState != "":
+		return n.OperState
 	}
-	if n.MTU > 0 {
-		parts = append(parts, "mtu "+strconv.Itoa(int(n.MTU)))
-	}
-	if len(parts) == 0 {
-		return "—"
-	}
-	return strings.Join(parts, " · ")
+	return "—"
 }
 
 // formatMount renders one storage mount : "ext4 18 GiB free / 32 GiB · /dev/vda1".
