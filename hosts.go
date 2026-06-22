@@ -208,11 +208,10 @@ func hostsColumns() []table.Column {
 		{Title: "HOSTNAME", Width: 20},
 		{Title: "AZ", Width: 6},
 		{Title: "RACK", Width: 6},
-		{Title: "HYP", Width: 10},
 		{Title: "STATE", Width: 14},
 		{Title: "CONN", Width: 8},
 		{Title: "VERSION", Width: 10},
-		{Title: "DRIVERS", Width: 18},
+		{Title: "DRIVERS", Width: 22},
 		{Title: "LAST-SEEN", Width: 20},
 	}
 }
@@ -348,13 +347,17 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	}
 	ver := dashEmpty(h.AgentVersion)
 	drivers := dashEmpty(formatDriverVersions(h.DriverVersions))
+	// HYP dropped : DRIVERS already carries each loaded driver's
+	// kind (e.g. "qemu:v0.6.0") so a separate column would be
+	// redundant. Hypervisor is still in the detail drawer for
+	// hosts that registered before the driver-versions feature
+	// (DriverVersions empty, Hypervisor non-empty).
 	return table.Row{
 		cp,
 		uuidShort,
 		dashEmpty(h.Hostname),
 		dashEmpty(h.AZ),
 		dashEmpty(h.Rack),
-		dashEmpty(h.Hypervisor),
 		state,
 		conn,
 		ver,
