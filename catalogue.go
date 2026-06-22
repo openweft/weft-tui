@@ -82,6 +82,22 @@ var resourceCatalogue = []ResourceConfig{
 			}
 			return "created subnet " + v["name"], nil
 		},
+		EditFields: []FormField{
+			{Key: "name", Label: "Name (empty=keep current)"},
+			{Key: "description", Label: "Description (empty=keep current)"},
+			{Key: "gateway", Label: "Gateway (empty=keep current)"},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			_, err := c.UpdateSubnet(ctx, &weftv1.UpdateSubnetRequest{
+				Uuid: uuid, Name: v["name"],
+				Description: v["description"], Gateway: v["gateway"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated subnet " + s(row, "name"), nil
+		},
 	},
 	{
 		ID: "volumes", Title: "Volumes", Section: "Storage",
@@ -249,6 +265,22 @@ var resourceCatalogue = []ResourceConfig{
 			}
 			return "created load balancer " + v["name"], nil
 		},
+		EditFields: []FormField{
+			{Key: "name", Label: "Name (empty=keep current)"},
+			{Key: "listen_addr", Label: "Listen addr (empty=keep current)"},
+			{Key: "protocol", Label: "Protocol (empty=keep current)"},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			_, err := c.UpdateLoadBalancer(ctx, &weftv1.UpdateLoadBalancerRequest{
+				Uuid: uuid, Name: v["name"],
+				ListenAddr: v["listen_addr"], Protocol: v["protocol"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated load balancer " + s(row, "name"), nil
+		},
 	},
 	{
 		ID: "dns-zones", Title: "DNS Zones", Section: "Network",
@@ -282,6 +314,24 @@ var resourceCatalogue = []ResourceConfig{
 				return "", err
 			}
 			return "created DNS zone " + v["name"], nil
+		},
+		EditFields: []FormField{
+			{Key: "soa_email", Label: "SOA email (empty=keep current)"},
+			{Key: "ttl", Label: "Default TTL (-1=keep current)", Numeric: true},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			ttl := -1
+			if t, _ := strconv.Atoi(v["ttl"]); v["ttl"] != "" {
+				ttl = t
+			}
+			_, err := c.UpdateDNSZone(ctx, &weftv1.UpdateDNSZoneRequest{
+				Uuid: uuid, SoaEmail: v["soa_email"], Ttl: int32(ttl),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated DNS zone " + s(row, "name"), nil
 		},
 	},
 	{
@@ -321,6 +371,30 @@ var resourceCatalogue = []ResourceConfig{
 			}
 			return "created DNS record " + v["name"], nil
 		},
+		EditFields: []FormField{
+			{Key: "value", Label: "Value (empty=keep current)"},
+			{Key: "ttl", Label: "TTL (-1=keep current)", Numeric: true},
+			{Key: "priority", Label: "Priority (-1=keep current)", Numeric: true},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			ttl := -1
+			if t, _ := strconv.Atoi(v["ttl"]); v["ttl"] != "" {
+				ttl = t
+			}
+			prio := -1
+			if p, _ := strconv.Atoi(v["priority"]); v["priority"] != "" {
+				prio = p
+			}
+			_, err := c.UpdateDNSRecord(ctx, &weftv1.UpdateDNSRecordRequest{
+				Uuid: uuid, Value: v["value"],
+				Ttl: int32(ttl), Priority: int32(prio),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated DNS record " + s(row, "name"), nil
+		},
 	},
 	{
 		ID: "security-groups", Title: "Security Groups", Section: "Network",
@@ -352,6 +426,19 @@ var resourceCatalogue = []ResourceConfig{
 				return "", err
 			}
 			return "created security group " + v["name"], nil
+		},
+		EditFields: []FormField{
+			{Key: "description", Label: "Description (empty=keep current)"},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			_, err := c.SetSecurityGroupDescription(ctx, &weftv1.SetSecurityGroupDescriptionRequest{
+				Uuid: uuid, Description: v["description"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated security group " + s(row, "name"), nil
 		},
 	},
 	{
@@ -512,6 +599,22 @@ var resourceCatalogue = []ResourceConfig{
 			}
 			return "created AZ " + v["code"], nil
 		},
+		EditFields: []FormField{
+			{Key: "name", Label: "Name"},
+			{Key: "region", Label: "Region"},
+			{Key: "status", Label: "Status"},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			_, err := c.UpdateAZ(ctx, &weftv1.UpdateAZRequest{
+				Uuid: uuid, Name: v["name"],
+				Region: v["region"], Status: v["status"],
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated AZ " + s(row, "code"), nil
+		},
 	},
 	{
 		ID: "racks", Title: "Racks", Section: "Admin",
@@ -545,6 +648,26 @@ var resourceCatalogue = []ResourceConfig{
 				return "", err
 			}
 			return "created rack " + v["code"], nil
+		},
+		EditFields: []FormField{
+			{Key: "name", Label: "Name"},
+			{Key: "status", Label: "Status"},
+			{Key: "height_u", Label: "Height U (-1=keep current)", Numeric: true},
+		},
+		EditFn: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any, v map[string]string) (string, error) {
+			uuid := s(row, "uuid")
+			h := -1
+			if hh, _ := strconv.Atoi(v["height_u"]); v["height_u"] != "" {
+				h = hh
+			}
+			_, err := c.UpdateRack(ctx, &weftv1.UpdateRackRequest{
+				Uuid: uuid, Name: v["name"],
+				Status: v["status"], HeightU: int32(h),
+			})
+			if err != nil {
+				return "", err
+			}
+			return "updated rack " + s(row, "code"), nil
 		},
 	},
 	{
