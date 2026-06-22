@@ -34,6 +34,8 @@ type vmRow struct {
 	UUID     string
 	HostUUID string // raw VMInfo.host_uuid from the wire
 	HostName string // resolved via the hosts cache ; "" when unknown
+	AZ       string // resolved via the hosts cache (Host.AZ)
+	Rack     string // resolved via the hosts cache (Host.Rack)
 	State    string
 	Image    string
 	CPU      uint32
@@ -89,7 +91,9 @@ type vmsModel struct {
 func vmsColumns() []table.Column {
 	return []table.Column{
 		{Title: "NAME", Width: 18},
-		{Title: "PROJECT", Width: 14},
+		{Title: "PROJECT", Width: 12},
+		{Title: "AZ", Width: 5},
+		{Title: "RACK", Width: 5},
 		{Title: "HOST", Width: 10},
 		{Title: "STATE", Width: 10},
 		{Title: "IMAGE", Width: 22},
@@ -133,7 +137,7 @@ func (m *vmsModel) selected() (name, project string) {
 // roundtrip. Called when a hostsLoadedMsg lands after VMs were
 // already on screen — we want the HOST column to surface the
 // hostname immediately rather than waiting for the next ListVMs.
-func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) string) {
+func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) (name, az, rack string)) {
 	if hostLookup == nil || len(m.rows) == 0 {
 		return
 	}
@@ -141,8 +145,11 @@ func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) string) {
 	changed := false
 	for i := range m.rows {
 		if m.rows[i].HostUUID != "" {
-			if name := hostLookup(m.rows[i].HostUUID); name != m.rows[i].HostName {
+			name, az, rack := hostLookup(m.rows[i].HostUUID)
+			if name != m.rows[i].HostName || az != m.rows[i].AZ || rack != m.rows[i].Rack {
 				m.rows[i].HostName = name
+				m.rows[i].AZ = az
+				m.rows[i].Rack = rack
 				changed = true
 			}
 		}
@@ -155,17 +162,16 @@ func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) string) {
 
 // applyVMs refreshes the table + in-memory rows from a ListVMs
 // response. The hostLookup callback resolves VMInfo.host_uuid into
-// a friendly hostname for the HOST column ; pass nil when the hosts
-// cache isn't populated yet (the column will fall back to a short
-// UUID, or the IP if the agent hasn't filled host_uuid).
-func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) string) {
+// (hostname, az, rack) tuples for the HOST / AZ / RACK columns ;
+// nil → blanks (the columns then render "—").
+func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) (name, az, rack string)) {
 	rows := make([]vmRow, 0, len(resp.Vms))
 	tableRows := make([]table.Row, 0, len(resp.Vms))
 	for _, v := range resp.Vms {
 		state := vmStateString(v.State)
-		hostName := ""
+		var hostName, az, rack string
 		if hostLookup != nil && v.HostUuid != "" {
-			hostName = hostLookup(v.HostUuid)
+			hostName, az, rack = hostLookup(v.HostUuid)
 		}
 		row := vmRow{
 			Name:     v.Name,
@@ -173,6 +179,8 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 			UUID:     v.Uuid,
 			HostUUID: v.HostUuid,
 			HostName: hostName,
+			AZ:       az,
+			Rack:     rack,
 			State:    state,
 			Image:    v.Image,
 			CPU:      v.Cpu,
@@ -220,12 +228,46 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 	return table.Row{
 		dashEmpty(r.Name),
 		dashEmpty(r.Project),
+		azBadge(theme, r.AZ),
+		dashEmpty(r.Rack),
 		host,
 		state,
 		dashEmpty(shortImage(r.Image)),
 		fmt.Sprintf("%d", r.CPU),
 		fmt.Sprintf("%d", r.MemMB),
 	}
+}
+
+// azBadge renders a colored "●" bullet next to the AZ name so the
+// operator can scan the AZ column visually. Empty AZ → "—" (no
+// color). A small palette cycles deterministically by az-string hash
+// so two VMs in "dc1" always get the same color, and ordering by AZ
+// (when the user clicks the column header) groups same-DC rows
+// together visually.
+func azBadge(theme Theme, az string) string {
+	if az == "" {
+		return "—"
+	}
+	return azColor(az).Render("● ") + az
+}
+
+// azColor returns one of a small palette keyed by FNV-1a hash of the
+// az name. Pure function ; stable across runs / refreshes.
+func azColor(az string) lipgloss.Style {
+	var h uint32 = 2166136261
+	for i := 0; i < len(az); i++ {
+		h ^= uint32(az[i])
+		h *= 16777619
+	}
+	palette := []lipgloss.AdaptiveColor{
+		{Light: "#0EA5E9", Dark: "#7DD3FC"}, // sky
+		{Light: "#10B981", Dark: "#6EE7B7"}, // emerald
+		{Light: "#F59E0B", Dark: "#FCD34D"}, // amber
+		{Light: "#A855F7", Dark: "#D8B4FE"}, // purple
+		{Light: "#EF4444", Dark: "#FCA5A5"}, // red
+		{Light: "#EC4899", Dark: "#F9A8D4"}, // pink
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(palette[h%uint32(len(palette))])
 }
 
 // shortImage strips registry / repo prefixes from an OCI image

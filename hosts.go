@@ -440,12 +440,20 @@ func (m *hostsModel) selectedHostname() string {
 // VMs tab to resolve VMInfo.host_uuid into a friendly column value
 // without a second ListHosts roundtrip.
 func (m *hostsModel) hostnameByUUID(uuid string) string {
+	name, _, _ := m.placementByUUID(uuid)
+	return name
+}
+
+// placementByUUID returns (hostname, az, rack) for a host UUID, with
+// empty strings on miss. The VMs tab uses this to populate its
+// HOST / AZ / RACK columns from a single lookup.
+func (m *hostsModel) placementByUUID(uuid string) (string, string, string) {
 	for i := range m.rows {
 		if m.rows[i].UUID == uuid {
-			return m.rows[i].Hostname
+			return m.rows[i].Hostname, m.rows[i].AZ, m.rows[i].Rack
 		}
 	}
-	return ""
+	return "", "", ""
 }
 
 // applyVMCounts stamps each in-memory row with the number of VMs
