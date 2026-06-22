@@ -68,6 +68,12 @@ type Model struct {
 	theme    Theme
 	themeIdx int // index into themePresets ; cycled by the `T` key
 	client   Client
+	// clusterName is shown in the title bar to disambiguate which
+	// federated cluster the operator is currently inspecting.
+	// Sourced from --cluster-name flag or $WEFT_CLUSTER_NAME at
+	// main() time ; empty hides the suffix and the title reads as
+	// "weft tui" only (the pre-v0.3.6 behaviour).
+	clusterName string
 
 	active   tab
 	hosts    hostsModel
@@ -148,6 +154,18 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 			raw = c
 		}
 		rm = newResourceListModel(m.theme, raw, cfg)
+		// Apply the current terminal size at construction so a
+		// resource opened AFTER the initial WindowSizeMsg doesn't
+		// render at the default 15-row × default-column-width
+		// layout. The size handler above also iterates the map on
+		// every resize so subsequent terminal changes propagate.
+		if m.width > 0 {
+			h := m.height - 4
+			if h < 5 {
+				h = 5
+			}
+			applyResize(&rm.table, cfg.Columns, m.width, h)
+		}
 		m.resource[id] = rm
 	}
 	m.active = tabResource
@@ -179,9 +197,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h < 5 {
 			h = 5
 		}
-		m.hosts.table.SetHeight(h)
-		m.vms.table.SetHeight(h)
-		m.projects.table.SetHeight(h)
+		// Table widgets : resize BOTH height (to fill the viewport)
+		// AND column widths (proportionally to the declared widths
+		// in their original definitions — captured by the per-tab
+		// modeOriginalColumns helpers below). The bubbles/table
+		// widget doesn't reflow on its own, so this is the single
+		// source of responsive layout for the whole TUI.
+		applyResize(&m.hosts.table, hostsColumns(), msg.Width, h)
+		applyResize(&m.vms.table, vmsColumns(), msg.Width, h)
+		applyResize(&m.projects.table, projectsColumns(), msg.Width, h)
+		// Every previously-opened resource list inherits the new
+		// size too. Lazily-created ones (palette opens a fresh
+		// resource later) pick it up via newResourceListModel
+		// reading m.width/m.height at construction time.
+		for _, rm := range m.resource {
+			applyResize(&rm.table, rm.cfg.Columns, msg.Width, h)
+		}
 		// The events viewport reserves one line for the header.
 		evpH := h - 1
 		if evpH < 3 {
@@ -577,7 +608,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleHostsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	// Detail drawer open : Esc/Enter/q closes ; everything else is
+	// swallowed so the action keys (c / u / d / x) don't fire while
+	// the operator is reading the inspector.
+	if m.hosts.detailOpen {
+		switch key {
+		case "esc", "enter", "q":
+			m.hosts.detailOpen = false
+			m.hosts.detailUUID = ""
+		}
+		return m, nil
+	}
 	switch key {
+	case "enter":
+		row, ok := m.hosts.selectedRow()
+		if !ok {
+			m.setError("no host selected")
+			return m, nil
+		}
+		m.hosts.detailOpen = true
+		m.hosts.detailUUID = row.UUID
+		return m, nil
 	case "c":
 		uuid := m.hosts.selectedUUID()
 		host := m.hosts.selectedHostname()
@@ -755,7 +806,11 @@ func (m Model) renderTabs() string {
 	if m.active == tabResource && m.currentResource != "" {
 		parts = append(parts, m.theme.ActiveTab.Render(": "+m.currentResource))
 	}
-	title := m.theme.Title.Render("weft tui")
+	head := "weft tui"
+	if m.clusterName != "" {
+		head += " · " + m.clusterName
+	}
+	title := m.theme.Title.Render(head)
 	tabs := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 	return lipgloss.JoinHorizontal(lipgloss.Top, title, tabs)
 }

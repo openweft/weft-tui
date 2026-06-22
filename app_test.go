@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -934,6 +935,102 @@ func TestCatalogue_RWCoverage(t *testing.T) {
 				t.Errorf("resource %q is missing CreateFn — wire CreateFields + CreateFn, or add to expectedReadOnly with a documented reason", r.ID)
 			}
 		}
+	}
+}
+
+// TestResponsive_RescaleColumns pins the v0.3.6 column rescaler :
+// declared widths act as weights ; the rescaled set sums to the
+// available width (minus padding) with no column below the min.
+func TestResponsive_RescaleColumns(t *testing.T) {
+	orig := []table.Column{
+		{Title: "A", Width: 10},
+		{Title: "B", Width: 20},
+		{Title: "C", Width: 30},
+	}
+	out := rescaleColumns(orig, 120)
+	if len(out) != 3 {
+		t.Fatalf("got %d cols, want 3", len(out))
+	}
+	var total int
+	for _, c := range out {
+		total += c.Width
+	}
+	// usable = 120 - tableSidePadding(4) = 116. Sum must equal 116
+	// exactly thanks to the tail-correction.
+	if total != 116 {
+		t.Errorf("sum of widths = %d, want 116 (=120-padding)", total)
+	}
+	// Order must preserve titles (proportional, not re-sorted).
+	for i, want := range []string{"A", "B", "C"} {
+		if out[i].Title != want {
+			t.Errorf("col[%d].Title = %q, want %q", i, out[i].Title, want)
+		}
+	}
+	// Narrow terminal : columns clamp to the min instead of going to 0.
+	out = rescaleColumns(orig, 20)
+	for i, c := range out {
+		if c.Width < columnMinWidth {
+			t.Errorf("col[%d] = %d, want >= %d (min clamp)", i, c.Width, columnMinWidth)
+		}
+	}
+}
+
+// TestResponsive_ZeroWidthPreservesInput pins the defensive branch :
+// availableWidth ≤ 0 returns the input slice unchanged so a parent
+// that hasn't seen a WindowSizeMsg yet doesn't zero the layout.
+func TestResponsive_ZeroWidthPreservesInput(t *testing.T) {
+	orig := []table.Column{{Title: "X", Width: 5}, {Title: "Y", Width: 7}}
+	out := rescaleColumns(orig, 0)
+	if len(out) != 2 || out[0].Width != 5 || out[1].Width != 7 {
+		t.Errorf("zero-width should return input unchanged, got %+v", out)
+	}
+}
+
+// TestHosts_DetailDrawerOnEnter pins the v0.3.6 host inspector :
+// pressing Enter on Hosts opens the drawer + sets detailUUID.
+func TestHosts_DetailDrawerOnEnter(t *testing.T) {
+	m := New(&fakeClient{})
+	m.active = tabHosts
+	// Seed a single host so selectedRow() has something to return.
+	m.hosts.rows = []hostsRow{{UUID: "h-1", Hostname: "host-1"}}
+	m.hosts.table.SetRows([]table.Row{{"h-1", "host-1", "", "", "", "", "", ""}})
+	next, _ := m.Update(keyMsg('\r')) // Enter → "enter" via Bubble Tea
+	m = next.(Model)
+	// Bubble Tea's keyMsg helper doesn't always map '\r' to "enter" ;
+	// fall back to tea.KeyEnter for the assertion.
+	if !m.hosts.detailOpen {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = next.(Model)
+	}
+	if !m.hosts.detailOpen {
+		t.Errorf("Enter on Hosts should open detail drawer ; detailOpen=false")
+	}
+	if m.hosts.detailUUID != "h-1" {
+		t.Errorf("detailUUID = %q, want h-1", m.hosts.detailUUID)
+	}
+	// Esc closes.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.hosts.detailOpen {
+		t.Errorf("Esc should close detail drawer ; still open")
+	}
+}
+
+// TestClusterName_AppearsInTitle pins the v0.3.6 federation cue :
+// when m.clusterName is set, the rendered title includes it.
+func TestClusterName_AppearsInTitle(t *testing.T) {
+	m := New(&fakeClient{})
+	m.clusterName = "prod-eu"
+	m.width = 100
+	m.height = 30
+	title := m.renderTabs()
+	if !strings.Contains(title, "prod-eu") {
+		t.Errorf("title bar missing cluster name : %q", title)
+	}
+	m.clusterName = ""
+	title = m.renderTabs()
+	if strings.Contains(title, "·") {
+		t.Errorf("empty clusterName should not show the separator : %q", title)
 	}
 }
 
