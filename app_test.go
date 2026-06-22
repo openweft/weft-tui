@@ -407,7 +407,7 @@ func vmsModelWithSeed(t *testing.T, c *fakeClient, vm *weftv1.VMInfo) Model {
 	m := New(c)
 	next, _ := m.Update(keyMsg('2'))
 	m = next.(Model)
-	m.vms.applyVMs(c.listVMsResp, m.hosts.hostnameByUUID)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID)
 	return m
 }
 
@@ -515,14 +515,14 @@ func TestVMsHostColumnResolvesHostname(t *testing.T) {
 	m = next.(Model)
 
 	// VMs land first ; HOST column should fall back to short UUID.
-	m.vms.applyVMs(c.listVMsResp, m.hosts.hostnameByUUID)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID)
 	if got := m.vms.rows[0].HostName; got != "" {
 		t.Errorf("HostName before hosts arrive = %q, want empty", got)
 	}
 
 	// Hosts arrive ; refresh re-resolves names.
 	m.hosts.applyHosts(c.listHostsResp)
-	m.vms.refreshHostNames(m.hosts.hostnameByUUID)
+	m.vms.refreshHostNames(m.hosts.placementByUUID)
 	if got := m.vms.rows[0].HostName; got != "dc1-r1-h1" {
 		t.Errorf("HostName after hosts arrive = %q, want dc1-r1-h1", got)
 	}

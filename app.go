@@ -303,7 +303,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Refresh the VMs HOST column with the now-populated
 			// hosts cache so the resolved hostnames appear without
 			// waiting for the next ListVMs tick.
-			m.vms.refreshHostNames(m.hosts.hostnameByUUID)
+			m.vms.refreshHostNames(m.hosts.placementByUUID)
 			// Cross-pollinate VM counts so the new hosts table
 			// reflects the prior VM listing's placement.
 			m.hosts.applyVMCounts(vmCountsByHost(m.vms.rows))
@@ -344,7 +344,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vms.loading = false
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
-			m.vms.applyVMs(msg.resp, m.hosts.hostnameByUUID)
+			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID)
 			// Push fresh per-host counts to the hosts model so the
 			// "VMS" column reflects the new placement immediately —
 			// no need to wait for the next hostsLoadedMsg.
