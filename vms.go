@@ -192,15 +192,12 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 // tableRow is the bubbles/table row for one VM. State gets a coloured
 // badge so a running fleet visually pops vs. a stopped/errored one.
 func (r vmRow) tableRow(theme Theme) table.Row {
+	// STATE renders PLAIN text — no badge ANSI in the cell. Same
+	// reason as the Hosts table : bubbles/table's truncator cuts
+	// ANSI mid-sequence under narrow terminals, blanking the cell.
+	// Plain "running" / "stopped" / "error" is width-safe ; the
+	// theme tint lives on the row-selection style instead.
 	state := dashEmpty(r.State)
-	switch strings.ToLower(r.State) {
-	case "running":
-		state = theme.BadgeOK.Render(state)
-	case "stopped":
-		state = theme.BadgeWarn.Render(state)
-	case "error":
-		state = theme.BadgeBad.Render(state)
-	}
 	// HOST column preference : hostname (operator-recognisable) →
 	// short host UUID (8 chars, cross-references the Hosts tab) →
 	// IP (legacy fallback for agents on weft-proto < v0.12.0).
@@ -225,10 +222,26 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 		dashEmpty(r.Project),
 		host,
 		state,
-		dashEmpty(truncate(r.Image, 22)),
+		dashEmpty(shortImage(r.Image)),
 		fmt.Sprintf("%d", r.CPU),
 		fmt.Sprintf("%d", r.MemMB),
 	}
+}
+
+// shortImage strips registry / repo prefixes from an OCI image
+// reference so the IMAGE column reads usefully under a narrow body
+// width. "ghcr.io/openweft/weft-etcd:v3.6.0" → "weft-etcd:v3.6.0" ;
+// non-OCI strings (legacy "microvm/direct_linux") pass through
+// unchanged so the operator still sees what the agent registered.
+func shortImage(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Slash-separated path : keep only the last segment.
+	if i := strings.LastIndex(s, "/"); i >= 0 && i < len(s)-1 {
+		return s[i+1:]
+	}
+	return s
 }
 
 // View renders the VMs tab body. The logs viewport, when open, draws
