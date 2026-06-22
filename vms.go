@@ -375,9 +375,9 @@ func loadVMLogsCmd(client VMsClient, name, project string) tea.Cmd {
 	}
 }
 
-// vmStateString maps a wire VMState into the short uppercase tag the
-// table shows (RUNNING / STOPPED / ERROR / —). Falls back to the proto
-// String() for anything weft adds in the future.
+// vmStateString maps a wire VMState into the short lowercase tag the
+// table shows. UNSPECIFIED renders as "unknown" rather than "—" so
+// the column always carries an operator-meaningful label.
 func vmStateString(s weftv1.VMState) string {
 	switch s {
 	case weftv1.VMState_VM_STATE_RUNNING:
@@ -388,8 +388,18 @@ func vmStateString(s weftv1.VMState) string {
 		return "error"
 	case weftv1.VMState_VM_STATE_NOT_CREATED:
 		return "not-created"
+	case weftv1.VMState_VM_STATE_CREATED:
+		return "created"
+	case weftv1.VMState_VM_STATE_STARTING:
+		return "starting"
+	case weftv1.VMState_VM_STATE_STOPPING:
+		return "stopping"
+	case weftv1.VMState_VM_STATE_ZOMBIE:
+		return "zombie"
+	case weftv1.VMState_VM_STATE_DELETING:
+		return "deleting"
 	}
-	return ""
+	return "unknown"
 }
 
 // lineTailLast keeps only the last n lines of s. Used to cap log
