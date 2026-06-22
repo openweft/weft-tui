@@ -796,17 +796,114 @@ func (m Model) View() string {
 }
 
 // sidebarWidth is the fixed horizontal slot the sidebar occupies,
-// including border + padding. Tuned so the longest entry
-// ("Projects" / "Networks" / "Volumes" + the 1-9 shortcut prefix)
-// fits without wrap on a typical narrow terminal (80 col → 60 col
-// remaining for the body table — still readable).
-const sidebarWidth = 22
+// including border + padding. Tuned so the longest catalogue entry
+// ("Scheduling Rules" / "Installed Plugins" / "Availability Zones"
+// / "SSH Keys (catalogue)" — all ~17-20 chars) fits with its
+// shortcut prefix + the active "▸" marker. 28 col leaves a body
+// width of 52 col on an 80-col terminal — still readable.
+const sidebarWidth = 28
+
+// sidebarEntry is one clickable row in the sidebar. Either tab is
+// set (a core tab) or resourceID is set (a catalogue resource).
+// Mutually exclusive ; sidebarRows tags each.
+type sidebarEntry struct {
+	tab        tab
+	resourceID string
+	label      string
+	// shortcut shows the keyboard hint for the row. "1..4" for the
+	// core tabs ; "·" for catalogue entries (no global shortcut —
+	// click or palette).
+	shortcut string
+}
+
+// sidebarSections is the ordered list of sections + their entries
+// the sidebar renders. Built once from tabLabels (core) +
+// resourceCatalogue (grouped by their Section attribute, sorted by
+// title within each group). Sections list section.* of the
+// catalogue in the same order operators expect : Network, Storage,
+// Compute, Identity, Admin.
+func sidebarSections() []sidebarSection {
+	sections := []sidebarSection{{
+		Header:  "core",
+		Entries: coreEntries(),
+	}}
+	// Group the catalogue by Section.
+	groups := map[string][]ResourceConfig{}
+	order := []string{}
+	for _, r := range resourceCatalogue {
+		if _, seen := groups[r.Section]; !seen {
+			order = append(order, r.Section)
+		}
+		groups[r.Section] = append(groups[r.Section], r)
+	}
+	// Stable section ordering : Network → Storage → Compute →
+	// Identity → Admin → any unknown bucket last. Matches the
+	// catalogue's declaration order today ; if the catalogue grows
+	// a new bucket it appears below the known ones.
+	preferred := []string{"Network", "Storage", "Compute", "Identity", "Admin"}
+	ordered := make([]string, 0, len(order))
+	seen := map[string]bool{}
+	for _, s := range preferred {
+		if _, ok := groups[s]; ok {
+			ordered = append(ordered, s)
+			seen[s] = true
+		}
+	}
+	for _, s := range order {
+		if !seen[s] {
+			ordered = append(ordered, s)
+		}
+	}
+	for _, sec := range ordered {
+		entries := make([]sidebarEntry, 0, len(groups[sec]))
+		for _, r := range groups[sec] {
+			entries = append(entries, sidebarEntry{
+				resourceID: r.ID,
+				label:      r.Title,
+				shortcut:   "·",
+			})
+		}
+		sections = append(sections, sidebarSection{
+			Header:  strings.ToLower(sec),
+			Entries: entries,
+		})
+	}
+	sections = append(sections, sidebarSection{
+		Header: "more",
+		Entries: []sidebarEntry{
+			{label: "palette", shortcut: "^P"},
+			{label: "help", shortcut: "?"},
+		},
+	})
+	return sections
+}
+
+type sidebarSection struct {
+	Header  string
+	Entries []sidebarEntry
+}
+
+// coreEntries materialises the 4 fixed top-level tabs as sidebar
+// entries. The shortcut digit doubles as the keyboard accelerator
+// the legacy 1..4 keymap already drives.
+func coreEntries() []sidebarEntry {
+	out := make([]sidebarEntry, len(tabLabels))
+	for i, label := range tabLabels {
+		out[i] = sidebarEntry{
+			tab:      tab(i),
+			label:    label,
+			shortcut: fmt.Sprintf("%d", i+1),
+		}
+	}
+	return out
+}
 
 // renderSidebar draws the vertical object-type list on the left.
-// Numeric shortcuts (1..4) match the legacy tab order so muscle
-// memory carries over ; the palette (Ctrl-P) still drives the
-// "resource" entry when the operator wants one of the catalogue
-// views (Networks / Volumes / Plugins / …).
+// Core tabs (Hosts/VMs/Projects/Events) sit at the top with their
+// numeric shortcut ; the full resource catalogue follows below,
+// grouped by section (Network / Storage / Compute / Identity /
+// Admin). Click any entry to jump to it ; the active entry picks
+// up the SidebarItemActive style.
 func (m Model) renderSidebar() string {
 	var b strings.Builder
 	head := "weft"
@@ -815,29 +912,34 @@ func (m Model) renderSidebar() string {
 	}
 	b.WriteString(m.theme.Title.Render(head))
 	b.WriteString("\n")
-	b.WriteString(m.theme.SidebarSection.Render("core"))
-	b.WriteString("\n")
-	for i, label := range tabLabels {
-		active := tab(i) == m.active
-		shortcut := fmt.Sprintf("%d", i+1)
-		b.WriteString(sidebarRow(m.theme, shortcut, label, active))
+	for _, sec := range sidebarSections() {
+		b.WriteString(m.theme.SidebarSection.Render(sec.Header))
 		b.WriteString("\n")
+		for _, e := range sec.Entries {
+			active := m.isSidebarEntryActive(e)
+			b.WriteString(sidebarRow(m.theme, e.shortcut, e.label, active))
+			b.WriteString("\n")
+		}
 	}
-	if m.active == tabResource && m.currentResource != "" {
-		b.WriteString(m.theme.SidebarSection.Render("resource"))
-		b.WriteString("\n")
-		b.WriteString(sidebarRow(m.theme, "·", m.currentResource, true))
-		b.WriteString("\n")
-	}
-	b.WriteString(m.theme.SidebarSection.Render("more"))
-	b.WriteString("\n")
-	b.WriteString(m.theme.SidebarItem.Render("^P palette"))
-	b.WriteString("\n")
-	b.WriteString(m.theme.SidebarItem.Render("?  help"))
 	return m.theme.SidebarBox.
 		Width(sidebarWidth - 2).
 		Height(m.bodyHeight()).
 		Render(b.String())
+}
+
+// isSidebarEntryActive returns true when the entry corresponds to
+// the currently-active view : core tab match for tab-typed entries,
+// resource-ID match for catalogue entries.
+func (m Model) isSidebarEntryActive(e sidebarEntry) bool {
+	if e.resourceID != "" {
+		return m.active == tabResource && m.currentResource == e.resourceID
+	}
+	// "more" rows have no associated tab AND no resource ; they're
+	// never "active" — operators use ^P / ? to invoke them.
+	if e.shortcut == "^P" || e.shortcut == "?" {
+		return false
+	}
+	return m.active == e.tab
 }
 
 // sidebarRow renders one entry : "<shortcut> <label>". Active rows
@@ -896,39 +998,67 @@ func (m Model) bodyWidth() int {
 }
 
 // sidebarHitRows maps each rendered Y coordinate inside the sidebar
-// to the tab the operator activates by clicking that row. Mirrors
-// renderSidebar's WriteString sequence exactly :
+// to the target the operator activates by clicking that row. Rather
+// than predict lipgloss border / padding / section padding offsets
+// (which drift whenever the theme tweaks them), we render the
+// sidebar once and scan the resulting lines for each entry label.
+// Cheap (~1ms) and immune to layout refactors.
 //
-//   row 0 : border top
-//   row 1 : padding top
-//   row 2 : "weft" (Title line 1)
-//   row 3 : cluster name (only when m.clusterName != "")
-//   row 4 : blank ("\n" after Title.Render)
-//   row 5 : blank (SidebarSection.PaddingTop adds a leading blank)
-//   row 6 : "core" header
-//   row 7 : Hosts
-//   row 8 : VMs
-//   row 9 : Projects
-//   row 10 : Events
-//
-// When the cluster name is empty, every "after Title" row shifts
-// up by one. The map only carries clickable rows ; the rest stays
-// unmapped so non-matching clicks fall through.
-func (m Model) sidebarHitRows() map[int]tab {
-	out := make(map[int]tab, len(tabLabels))
-	y := 2 // border + top padding
-	y++   // "weft"
-	if m.clusterName != "" {
-		y++
-	}
-	y++ // explicit "\n" after Title.Render
-	y++ // SidebarSection.PaddingTop leading blank
-	y++ // "core" header line itself
-	for i := range tabLabels {
-		out[y] = tab(i)
-		y++
+// Strips ANSI escape sequences before substring-matching so the
+// terminal color codes on active rows don't break the lookup.
+func (m Model) sidebarHitRows() map[int]sidebarEntry {
+	rendered := m.renderSidebar()
+	lines := strings.Split(rendered, "\n")
+	out := make(map[int]sidebarEntry, 32)
+	for _, sec := range sidebarSections() {
+		for _, e := range sec.Entries {
+			// "more" rows (palette / help) have no real target ;
+			// skip them so a click doesn't no-op silently — we
+			// reserve those keys for the keyboard.
+			if e.tab == 0 && e.resourceID == "" {
+				continue
+			}
+			needle := e.shortcut + " " + e.label
+			for y, line := range lines {
+				if _, taken := out[y]; taken {
+					continue
+				}
+				plain := stripANSI(line)
+				if strings.Contains(plain, needle) {
+					out[y] = e
+					break
+				}
+			}
+		}
 	}
 	return out
+}
+
+// stripANSI removes CSI escape sequences from s. lipgloss writes
+// these to colour active sidebar rows, and the substring search
+// in sidebarHitRows needs the raw label text to match.
+func stripANSI(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\x1b' || i+1 >= len(s) || s[i+1] != '[' {
+			b.WriteByte(s[i])
+			continue
+		}
+		// Skip "\x1b[" + parameters + final byte (in 0x40..0x7e).
+		i += 2
+		for i < len(s) {
+			c := s[i]
+			if c >= 0x40 && c <= 0x7e {
+				break
+			}
+			i++
+		}
+	}
+	return b.String()
 }
 
 // handleMouse routes mouse events to the right surface :
@@ -958,8 +1088,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.X < sidebarWidth {
-			if t, ok := m.sidebarHitRows()[msg.Y]; ok {
-				return m.activateTab(t)
+			if e, ok := m.sidebarHitRows()[msg.Y]; ok {
+				if e.resourceID != "" {
+					cmd := m.switchToResource(e.resourceID)
+					return m, cmd
+				}
+				return m.activateTab(e.tab)
 			}
 			return m, nil
 		}
