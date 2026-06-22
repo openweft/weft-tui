@@ -1016,6 +1016,17 @@ func TestHosts_DetailDrawerOnEnter(t *testing.T) {
 	}
 }
 
+// TestAutoFetchClusterName_NilClient pins the safety branch :
+// passing nil short-circuits to "" so a TUI booting against an
+// unreachable socket doesn't crash before the connection error
+// surfaces. The main() flow then keeps the title bar empty —
+// same as the pre-v0.3.7 look.
+func TestAutoFetchClusterName_NilClient(t *testing.T) {
+	if got := autoFetchClusterName(nil); got != "" {
+		t.Errorf("autoFetchClusterName(nil) = %q, want \"\"", got)
+	}
+}
+
 // TestClusterName_AppearsInTitle pins the v0.3.6 federation cue :
 // when m.clusterName is set, the rendered title includes it.
 func TestClusterName_AppearsInTitle(t *testing.T) {
