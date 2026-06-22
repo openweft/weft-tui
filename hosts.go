@@ -31,17 +31,44 @@ type HostsClient interface {
 // the wire so the table render path is decoupled from the proto types
 // (the wire structs carry a lot more fields than we display).
 type hostsRow struct {
-	UUID           string
-	Hostname       string
-	AZ             string
-	Rack           string
-	Hypervisor     string
-	State          string
-	Cordoned       bool
-	Connected      bool
-	LastSeen       time.Time
-	AgentVersion   string
-	DriverVersions map[string]string
+	UUID              string
+	Hostname          string
+	AZ                string
+	Rack              string
+	Hypervisor        string
+	State             string
+	Cordoned          bool
+	Connected         bool
+	LastSeen          time.Time
+	AgentVersion      string
+	DriverVersions    map[string]string
+	OSPretty          string
+	OSID              string
+	OSVersion         string
+	KernelVersion     string
+	NetworkInterfaces []hostsNIC
+	StorageMounts     []hostsMount
+}
+
+// hostsNIC mirrors the wire NetworkInterface ; field names match the
+// drawer rendering shorthand. LinkSpeedMbps == 0 means "unknown" ;
+// the drawer renders "?" in that case.
+type hostsNIC struct {
+	Name          string
+	MAC           string
+	IPv4CIDRs     []string
+	IPv6CIDRs     []string
+	LinkSpeedMbps int64
+	MTU           int32
+	OperState     string
+}
+
+type hostsMount struct {
+	Mountpoint string
+	Device     string
+	FSType     string
+	TotalBytes int64
+	FreeBytes  int64
 }
 
 // hostsModel owns the state of the Hosts tab : the bubbles/table, the
@@ -148,9 +175,119 @@ func (m *hostsModel) detailView(width int) string {
 			b.WriteString("\n")
 		}
 	}
+	if r.OSPretty != "" || r.KernelVersion != "" {
+		b.WriteString("\n")
+		b.WriteString(m.theme.StatusKey.Render(padKey("OS")))
+		b.WriteString("  ")
+		b.WriteString(dashEmpty(r.OSPretty))
+		b.WriteString("\n")
+		b.WriteString(m.theme.StatusKey.Render(padKey("Kernel")))
+		b.WriteString("  ")
+		b.WriteString(dashEmpty(r.KernelVersion))
+		b.WriteString("\n")
+	}
+	if len(r.NetworkInterfaces) > 0 {
+		b.WriteString("\n")
+		b.WriteString(m.theme.StatusKey.Render(padKey("Network")))
+		b.WriteString("\n")
+		for _, n := range r.NetworkInterfaces {
+			b.WriteString("  ")
+			b.WriteString(m.theme.StatusKey.Render(padKey(n.Name)))
+			b.WriteString("  ")
+			b.WriteString(formatNIC(n))
+			b.WriteString("\n")
+		}
+	}
+	if len(r.StorageMounts) > 0 {
+		b.WriteString("\n")
+		b.WriteString(m.theme.StatusKey.Render(padKey("Storage")))
+		b.WriteString("\n")
+		for _, mt := range r.StorageMounts {
+			b.WriteString("  ")
+			b.WriteString(m.theme.StatusKey.Render(padKey(mt.Mountpoint)))
+			b.WriteString("  ")
+			b.WriteString(formatMount(mt))
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("\n")
 	b.WriteString(m.theme.Faint.Render("Esc / Enter close · c cordon · u uncordon · d state→down · x remove"))
 	return m.theme.HelpBox.Render(b.String())
+}
+
+// formatNIC renders one NIC for the drawer : "1Gbps up · IPv4 ip/cidr · MAC xx · MTU 1500".
+// Empty / zero fields are skipped so loopback-ish virtual NICs read clean.
+func formatNIC(n hostsNIC) string {
+	parts := make([]string, 0, 4)
+	if n.LinkSpeedMbps > 0 {
+		parts = append(parts, formatMbps(n.LinkSpeedMbps)+" "+dashEmpty(n.OperState))
+	} else if n.OperState != "" {
+		parts = append(parts, n.OperState)
+	}
+	if len(n.IPv4CIDRs) > 0 {
+		parts = append(parts, "ipv4 "+strings.Join(n.IPv4CIDRs, ","))
+	}
+	if len(n.IPv6CIDRs) > 0 {
+		parts = append(parts, "ipv6 "+strings.Join(n.IPv6CIDRs, ","))
+	}
+	if n.MAC != "" {
+		parts = append(parts, "mac "+n.MAC)
+	}
+	if n.MTU > 0 {
+		parts = append(parts, "mtu "+strconv.Itoa(int(n.MTU)))
+	}
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// formatMount renders one storage mount : "ext4 18 GiB free / 32 GiB · /dev/vda1".
+func formatMount(m hostsMount) string {
+	parts := make([]string, 0, 3)
+	if m.FSType != "" {
+		parts = append(parts, m.FSType)
+	}
+	if m.TotalBytes > 0 {
+		parts = append(parts, formatBytes(m.FreeBytes)+" free / "+formatBytes(m.TotalBytes))
+	}
+	if m.Device != "" {
+		parts = append(parts, m.Device)
+	}
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatMbps(m int64) string {
+	switch {
+	case m >= 1000:
+		return strconv.FormatInt(m/1000, 10) + "Gbps"
+	default:
+		return strconv.FormatInt(m, 10) + "Mbps"
+	}
+}
+
+// formatBytes renders one byte count as a human-readable size (GiB
+// for >= 1GiB, MiB otherwise — operators don't care about kB).
+func formatBytes(b int64) string {
+	const (
+		KiB = int64(1024)
+		MiB = 1024 * KiB
+		GiB = 1024 * MiB
+		TiB = 1024 * GiB
+	)
+	switch {
+	case b >= TiB:
+		return strconv.FormatFloat(float64(b)/float64(TiB), 'f', 1, 64) + " TiB"
+	case b >= GiB:
+		return strconv.FormatFloat(float64(b)/float64(GiB), 'f', 1, 64) + " GiB"
+	case b >= MiB:
+		return strconv.FormatFloat(float64(b)/float64(MiB), 'f', 0, 64) + " MiB"
+	default:
+		return strconv.FormatInt(b/KiB, 10) + " KiB"
+	}
 }
 
 // boolBadge renders true/false with the active theme's badge styles.
@@ -301,6 +438,36 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 			for k, v := range h.DriverVersions {
 				hr.DriverVersions[k] = v
 			}
+		}
+		hr.OSPretty = h.OsPretty
+		hr.OSID = h.OsId
+		hr.OSVersion = h.OsVersion
+		hr.KernelVersion = h.KernelVersion
+		for _, n := range h.NetworkInterfaces {
+			if n == nil {
+				continue
+			}
+			hr.NetworkInterfaces = append(hr.NetworkInterfaces, hostsNIC{
+				Name:          n.Name,
+				MAC:           n.Mac,
+				IPv4CIDRs:     append([]string(nil), n.Ipv4Cidrs...),
+				IPv6CIDRs:     append([]string(nil), n.Ipv6Cidrs...),
+				LinkSpeedMbps: n.LinkSpeedMbps,
+				MTU:           n.Mtu,
+				OperState:     n.Operstate,
+			})
+		}
+		for _, m := range h.StorageMounts {
+			if m == nil {
+				continue
+			}
+			hr.StorageMounts = append(hr.StorageMounts, hostsMount{
+				Mountpoint: m.Mountpoint,
+				Device:     m.Device,
+				FSType:     m.Fstype,
+				TotalBytes: m.TotalBytes,
+				FreeBytes:  m.FreeBytes,
+			})
 		}
 		rows = append(rows, hr)
 		tableRows = append(tableRows, hr.tableRow(m.theme, m.controlPlaneUUIDs))
