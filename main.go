@@ -56,13 +56,13 @@ func main() {
 	//      (the agent serving this socket, used to mark the CP row).
 	//   3. Empty + RPC error / unset → title bar shows just
 	//      "weft tui" + no row gets the CP marker.
-	rpcName, rpcLocalUUID := autoFetchClusterInfo(client)
+	rpcName, _, rpcCPSet := autoFetchClusterInfo(client)
 	if *clusterName != "" {
 		model.clusterName = *clusterName
 	} else {
 		model.clusterName = rpcName
 	}
-	model.hosts.localCPUUID = rpcLocalUUID
+	model.hosts.controlPlaneUUIDs = rpcCPSet
 	prog := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
@@ -71,34 +71,54 @@ func main() {
 }
 
 // autoFetchClusterInfo calls GetClusterInfo on the connected agent
-// + returns (cluster_name, local_host_uuid). Best-effort : RPC error
-// or empty response → ("", "") so the title bar / CP marker fall
-// back to their pre-feature look. The flag/env path in main()
-// short-circuits the cluster_name branch when the operator
-// explicitly set a name ; the local UUID is always taken from
-// the RPC (it's the canonical "which host is the CP we're driving").
+// + returns (cluster_name, local_host_uuid, control_plane_uuid_set).
+// Best-effort : RPC error or empty response → ("", "", nil) so the
+// title bar / CP marker fall back to their pre-feature look. The
+// flag/env path in main() short-circuits the cluster_name branch
+// when the operator explicitly set a name ; the local UUID + CP set
+// are always taken from the RPC.
+//
+// The CP set covers EVERY etcd quorum member (3 in a 3-DC HA cluster,
+// 1 in single-host dev) — the TUI's Hosts tab marks every matching
+// row's CP column with "*". The local UUID is kept separate (some
+// future TUI flows might want to distinguish the locally-driven CP
+// from the other quorum members).
 //
 // 3-second deadline so a slow agent at boot doesn't stall the TUI's
 // alt-screen switch. Cheap RPC ; the operator notices a stall.
-func autoFetchClusterInfo(client weftv1.WeftAgentClient) (clusterName, localHostUUID string) {
+func autoFetchClusterInfo(client weftv1.WeftAgentClient) (clusterName, localHostUUID string, controlPlaneUUIDs map[string]struct{}) {
 	if client == nil {
-		return "", ""
+		return "", "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	resp, err := client.GetClusterInfo(ctx, &weftv1.GetClusterInfoRequest{})
 	if err != nil || resp == nil {
-		return "", ""
+		return "", "", nil
 	}
-	return resp.ClusterName, resp.LocalHostUuid
+	cpSet := make(map[string]struct{}, len(resp.ControlPlaneHostUuids))
+	for _, u := range resp.ControlPlaneHostUuids {
+		if u == "" {
+			continue
+		}
+		cpSet[u] = struct{}{}
+	}
+	// Belt-and-braces : if the server runs a build that doesn't yet
+	// populate control_plane_host_uuids, fall back to the legacy
+	// single-CP marker via local_host_uuid alone so the operator
+	// still sees something.
+	if len(cpSet) == 0 && resp.LocalHostUuid != "" {
+		cpSet[resp.LocalHostUuid] = struct{}{}
+	}
+	return resp.ClusterName, resp.LocalHostUuid, cpSet
 }
 
 // autoFetchClusterName is the v0.3.7 entry point, kept for the
 // existing test (TestAutoFetchClusterName_NilClient) and any
 // external caller. Delegates to autoFetchClusterInfo + drops
-// the local-host UUID.
+// the local-host UUID + CP set.
 func autoFetchClusterName(client weftv1.WeftAgentClient) string {
-	name, _ := autoFetchClusterInfo(client)
+	name, _, _ := autoFetchClusterInfo(client)
 	return name
 }
 

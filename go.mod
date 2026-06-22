@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/openweft/weft-client v0.2.2
-	github.com/openweft/weft-proto v0.17.0
+	github.com/openweft/weft-proto v0.18.0
 	google.golang.org/grpc v1.81.1
 )
 

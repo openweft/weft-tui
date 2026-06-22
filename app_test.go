@@ -1028,9 +1028,10 @@ func TestHosts_CPMarker(t *testing.T) {
 		{UUID: "host-B", Hostname: "h-b", State: "down"},
 		{UUID: "host-C", Hostname: "h-c", State: "active", Cordoned: true},
 	}
-	// CP = host-B.
+	// CP = host-B (single-member set, mirrors single-host dev).
+	cpSet := map[string]struct{}{"host-B": {}}
 	for i, r := range rows {
-		row := r.tableRow(theme, "host-B")
+		row := r.tableRow(theme, cpSet)
 		// CP column.
 		want := "—"
 		if r.UUID == "host-B" {
@@ -1070,7 +1071,7 @@ func TestHosts_CPMarker(t *testing.T) {
 // row's CP column is "—" — no row gets a spurious mark.
 func TestHosts_CPMarker_NoLocal(t *testing.T) {
 	theme := NewTheme()
-	row := hostsRow{UUID: "host-X"}.tableRow(theme, "")
+	row := hostsRow{UUID: "host-X"}.tableRow(theme, nil)
 	if row[0] != "—" {
 		t.Errorf("CP with empty local UUID = %q, want —", row[0])
 	}

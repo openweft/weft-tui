@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,15 +31,17 @@ type HostsClient interface {
 // the wire so the table render path is decoupled from the proto types
 // (the wire structs carry a lot more fields than we display).
 type hostsRow struct {
-	UUID       string
-	Hostname   string
-	AZ         string
-	Rack       string
-	Hypervisor string
-	State      string
-	Cordoned   bool
-	Connected  bool
-	LastSeen   time.Time
+	UUID           string
+	Hostname       string
+	AZ             string
+	Rack           string
+	Hypervisor     string
+	State          string
+	Cordoned       bool
+	Connected      bool
+	LastSeen       time.Time
+	AgentVersion   string
+	DriverVersions map[string]string
 }
 
 // hostsModel owns the state of the Hosts tab : the bubbles/table, the
@@ -50,12 +53,13 @@ type hostsModel struct {
 	rows    []hostsRow
 	loading bool
 	err     error
-	// localCPUUID is the UUID of the host serving this TUI session's
-	// gRPC socket — populated at boot from GetClusterInfo (see
-	// main.go's autoFetchClusterInfo). Used in tableRow to mark the
-	// "CP" column for the row matching it. Empty (no CP info) → no
-	// row is marked.
-	localCPUUID string
+	// controlPlaneUUIDs is the set of host UUIDs that are MEMBERS of
+	// the control plane's etcd quorum — populated at boot from
+	// GetClusterInfo.control_plane_host_uuids (see main.go's
+	// autoFetchClusterInfo). Used in tableRow to mark the "CP" column
+	// for every host belonging to the quorum (3 in a 3-DC HA cluster,
+	// 1 in single-host dev). Nil/empty → no row is marked.
+	controlPlaneUUIDs map[string]struct{}
 
 	// confirmRemove is non-empty when the user pressed `x` ; holds
 	// the UUID of the host pending confirmation. While set, the
@@ -118,6 +122,7 @@ func (m *hostsModel) detailView(width int) string {
 		{"State", r.State},
 		{"Cordoned", boolBadge(r.Cordoned, m.theme)},
 		{"Connected", boolBadge(r.Connected, m.theme)},
+		{"Agent version", dashEmpty(r.AgentVersion)},
 		{"Last seen", lastSeenString(r.LastSeen)},
 	}
 	for _, p := range pairs {
@@ -125,6 +130,23 @@ func (m *hostsModel) detailView(width int) string {
 		b.WriteString("  ")
 		b.WriteString(p.v)
 		b.WriteString("\n")
+	}
+	if len(r.DriverVersions) > 0 {
+		b.WriteString("\n")
+		b.WriteString(m.theme.StatusKey.Render(padKey("Drivers")))
+		b.WriteString("\n")
+		kinds := make([]string, 0, len(r.DriverVersions))
+		for k := range r.DriverVersions {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		for _, k := range kinds {
+			b.WriteString("  ")
+			b.WriteString(m.theme.StatusKey.Render(padKey(k)))
+			b.WriteString("  ")
+			b.WriteString(r.DriverVersions[k])
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
 	b.WriteString(m.theme.Faint.Render("Esc / Enter close · c cordon · u uncordon · d state→down · x remove"))
@@ -189,6 +211,7 @@ func hostsColumns() []table.Column {
 		{Title: "HYP", Width: 10},
 		{Title: "STATE", Width: 14},
 		{Title: "CONN", Width: 8},
+		{Title: "VERSION", Width: 10},
 		{Title: "LAST-SEEN", Width: 20},
 	}
 }
@@ -272,8 +295,15 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 		if h.LastSeenAtUnixNs != 0 {
 			hr.LastSeen = time.Unix(0, h.LastSeenAtUnixNs)
 		}
+		hr.AgentVersion = h.AgentVersion
+		if len(h.DriverVersions) > 0 {
+			hr.DriverVersions = make(map[string]string, len(h.DriverVersions))
+			for k, v := range h.DriverVersions {
+				hr.DriverVersions[k] = v
+			}
+		}
 		rows = append(rows, hr)
-		tableRows = append(tableRows, hr.tableRow(m.theme, m.localCPUUID))
+		tableRows = append(tableRows, hr.tableRow(m.theme, m.controlPlaneUUIDs))
 	}
 	m.rows = rows
 	m.table.SetRows(tableRows)
@@ -289,11 +319,12 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 // sequences mid-byte under narrow terminals, blanking the cell.
 // Plain values are width-safe.
 //
-// localCPUUID, when non-empty, marks the CP host's row with "*"
-// in the leading "CP" column. Tip from main.go : the UUID comes
-// from GetClusterInfo.local_host_uuid (the agent serving this
-// TUI session's socket).
-func (h hostsRow) tableRow(theme Theme, localCPUUID string) table.Row {
+// controlPlaneUUIDs, when non-empty, marks each row whose UUID
+// is a MEMBER of the control plane's etcd quorum with "*" in the
+// leading "CP" column. Tip from main.go : the set comes from
+// GetClusterInfo.control_plane_host_uuids (one entry per etcd
+// member in HA, one entry in single-host dev).
+func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) table.Row {
 	state := dashEmpty(h.State)
 	if h.Cordoned {
 		state = state + " (cordoned)"
@@ -311,9 +342,10 @@ func (h hostsRow) tableRow(theme Theme, localCPUUID string) table.Row {
 		uuidShort = uuidShort[:8]
 	}
 	cp := "—"
-	if localCPUUID != "" && h.UUID == localCPUUID {
+	if _, ok := controlPlaneUUIDs[h.UUID]; ok {
 		cp = "*"
 	}
+	ver := dashEmpty(h.AgentVersion)
 	return table.Row{
 		cp,
 		uuidShort,
@@ -323,6 +355,7 @@ func (h hostsRow) tableRow(theme Theme, localCPUUID string) table.Row {
 		dashEmpty(h.Hypervisor),
 		state,
 		conn,
+		ver,
 		last,
 	}
 }
