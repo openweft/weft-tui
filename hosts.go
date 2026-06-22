@@ -566,9 +566,17 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 // GetClusterInfo.control_plane_host_uuids (one entry per etcd
 // member in HA, one entry in single-host dev).
 func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) table.Row {
-	state := dashEmpty(h.State)
+	// State rendering : tint "down" red + prefix a "✖" so a sick
+	// host pops visually. Cordoned suffix preserved. PLAIN text
+	// otherwise — bubbles/table's truncator cuts ANSI mid-sequence
+	// on narrow widths, so styling stays minimal + safe.
+	stateText := dashEmpty(h.State)
 	if h.Cordoned {
-		state = state + " (cordoned)"
+		stateText = stateText + " (cordoned)"
+	}
+	state := stateText
+	if strings.EqualFold(h.State, "down") {
+		state = theme.BadgeBad.Render("✖ " + stateText)
 	}
 	conn := "no"
 	if h.Connected {
