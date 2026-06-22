@@ -63,7 +63,13 @@ func main() {
 		model.clusterName = rpcName
 	}
 	model.hosts.controlPlaneUUIDs = rpcCPSet
-	prog := tea.NewProgram(model, tea.WithAltScreen())
+	// tea.WithMouseCellMotion enables mouse button events + cell-
+	// resolution motion (one MouseMsg per cell the cursor crosses).
+	// Update handles MouseMsg in app.go : sidebar entries toggle the
+	// active object type ; table rows move the cursor ; scroll-wheel
+	// pages the table viewport ; the palette entries become click
+	// targets when open.
+	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
 		os.Exit(1)
