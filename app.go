@@ -7,10 +7,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -118,7 +121,66 @@ type Model struct {
 	// the sidebar boundary. Set on MouseActionPress at the boundary
 	// column, cleared on MouseActionRelease.
 	dragSidebar bool
+
+	// logPaneH is the operator-overridden log pane viewport height
+	// (set by dragging the horizontal handle between body and log
+	// pane). 0 = use default (logPaneDefaultHeight). dragLogPane is
+	// true while a drag is in progress.
+	logPaneH    int
+	dragLogPane bool
+
+	// sidebarCollapsed = true → render the sidebar in icon-only
+	// mode (narrow column, shortcuts as glyphs, labels hidden).
+	// Toggle via Ctrl+B. Useful on small terminals where the
+	// catalogue + labels eat too much horizontal real estate.
+	sidebarCollapsed bool
+
+	// sidebarOffset is the row index of the first visible sidebar
+	// entry. Increments on wheel-down over the sidebar (or PgDn
+	// when the sidebar is focused) so the operator can reach
+	// entries past the bottom edge on short terminals. The
+	// catalogue is ~34 lines tall — clipped by ~5-10 lines on a
+	// 24-30 row terminal, which is what the operator hit when
+	// they reported "AZ and Racks still missing".
+	sidebarOffset int
+
+	// identity is the connection identity rendered in the topbar's
+	// right side : "user@host" for an SSH endpoint, "local" for a
+	// Unix-socket endpoint. Updated by connSwitchMsg whenever the
+	// ResilientClient swaps endpoints. Empty before the first
+	// switch arrives.
+	identity string
+
+	// conn is the latest connection-lifecycle line surfaced in the
+	// status bar : "● dc1-r1-h1" on a healthy link, "✖ failover failed"
+	// on an exhausted retry. Replaces the os.Stderr scrolling that
+	// used to bleed through the alt-screen. Empty = silent (initial
+	// boot before the first event).
+	conn connStatus
+
+	// logPane is the scrollable diagnostic strip rendered between
+	// the body and the status bar. Captures connEventMsg /
+	// connSwitchMsg + any other operator-facing log line. Auto-scroll
+	// follows the tail ; PgUp / wheel-up inside the pane pauses
+	// following so the operator can read older entries.
+	logPane logPane
 }
+
+// connStatus is the snapshot of the resilient connection's latest
+// event. level is one of ResilientEventInfo / Warn / Error so the
+// status bar can theme it ; msg is the operator-facing string.
+type connStatus struct {
+	level string
+	msg   string
+}
+
+// connSwitchMsg + connEventMsg are tea.Msg payloads bridged from the
+// ResilientClient callbacks. Without them the callback fires from a
+// background goroutine + we'd need to coordinate Model mutation by
+// hand ; sending through the Bubble Tea event loop keeps state
+// changes serialised through Update.
+type connSwitchMsg struct{ active Endpoint }
+type connEventMsg struct{ level, msg string }
 
 // contextMenu holds the right-click menu state. items is rebuilt on
 // every right-click based on the active tab + the selected row, so
@@ -159,6 +221,7 @@ func New(client Client) Model {
 		projects: newProjectsModel(theme),
 		events:   newEventsModel(theme),
 		resource: map[string]*ResourceListModel{},
+		logPane:  newLogPane(80),
 	}
 }
 
@@ -167,8 +230,79 @@ func New(client Client) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadHostsCmd(m.client),
+		// Seed the tenant + project lookup so the VMs tab's
+		// "<tenant>:<project>" prefix is populated before the
+		// operator switches to it. Without this, the first VMs
+		// render shows bare project names until the projects tab
+		// is visited or the periodic ticker fires.
+		loadProjectsCmd(m.client),
 		tickRefresh(),
 	)
+}
+
+// hostsForResource returns the host rows logically attached to the
+// given resource detail row. Matches by :
+//
+//   - "azs"   : host.AZ == row["code"] (AZ entries use code as their
+//               canonical short name, mirrored in HostInfo.AZ)
+//   - "racks" : host.Rack == row["code"] (same convention)
+//
+// Any other resource ID returns nil so the resource detail drawer
+// stays unchanged for non-Host-bearing catalogue rows.
+func (m *Model) hostsForResource(resourceID string, row map[string]any) []relatedHost {
+	if row == nil {
+		return nil
+	}
+	wantCode, _ := row["code"].(string)
+	if wantCode == "" {
+		return nil
+	}
+	var match func(h hostsRow) bool
+	switch resourceID {
+	case "azs":
+		match = func(h hostsRow) bool { return h.AZ == wantCode }
+	case "racks":
+		match = func(h hostsRow) bool { return h.Rack == wantCode }
+	default:
+		return nil
+	}
+	out := make([]relatedHost, 0)
+	for _, h := range m.hosts.rows {
+		if !match(h) {
+			continue
+		}
+		out = append(out, relatedHost{
+			Hostname:   h.Hostname,
+			AZ:         h.AZ,
+			Rack:       h.Rack,
+			Hypervisor: h.Hypervisor,
+			State:      h.State,
+		})
+	}
+	return out
+}
+
+// projectsForResource returns the project rows logically attached
+// to the given resource detail row. Today only "tenants" is
+// supported : matches by row["uuid"] == project.TenantUUID. The
+// projects tab's model holds the list ; the closure called from
+// the Tenant detail drawer reads it directly.
+func (m *Model) projectsForResource(resourceID string, row map[string]any) []relatedProject {
+	if resourceID != "tenants" || row == nil {
+		return nil
+	}
+	tenantUUID, _ := row["uuid"].(string)
+	if tenantUUID == "" {
+		return nil
+	}
+	out := make([]relatedProject, 0)
+	for _, p := range m.projects.rows {
+		if p.TenantUUID != tenantUUID {
+			continue
+		}
+		out = append(out, relatedProject{Name: p.Name, UUID: p.UUID})
+	}
+	return out
 }
 
 // switchToResource flips the active view to the named resource
@@ -191,13 +325,25 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 			raw = c
 		}
 		rm = newResourceListModel(m.theme, raw, cfg)
+		// Wire the AZ ↔ Hosts + Rack ↔ Hosts lookup so the detail
+		// drawer surfaces the attached hosts (operator directive
+		// 2026-06-23 "si les hosts sont rattaché a des az et des
+		// racks, ils devraient aparaitre dans les panneau
+		// correspondants"). The closure captures `m` (the outer
+		// Model) so it sees the latest hosts list at lookup time.
+		rm.relatedHosts = func(resourceID string, row map[string]any) []relatedHost {
+			return m.hostsForResource(resourceID, row)
+		}
+		rm.relatedProjects = func(resourceID string, row map[string]any) []relatedProject {
+			return m.projectsForResource(resourceID, row)
+		}
 		// Apply the current terminal size at construction so a
 		// resource opened AFTER the initial WindowSizeMsg doesn't
 		// render at the default 15-row × default-column-width
 		// layout. The size handler above also iterates the map on
 		// every resize so subsequent terminal changes propagate.
 		if m.width > 0 {
-			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-2)
+			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-1)
 		}
 		m.resource[id] = rm
 	}
@@ -227,11 +373,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Log pane width tracks the full terminal width ; resize it
+		// FIRST so bodyHeight() (which subtracts logPane.height())
+		// stays in sync.
+		m.logPane.resize(m.width)
+		// Apply any drag-set height override.
+		if m.logPaneH > 0 {
+			m.logPane.SetHeight(m.logPaneH)
+		}
 		// Reserve : status bar (2 lines) + 1 line breather + sidebar
 		// occupies its own horizontal slot, so the body width must
 		// exclude it. Match bodyHeight()/bodyWidth() so applyResize
 		// + renderBody agree on the viewport.
-		h := m.bodyHeight() - 2 // account for BodyBox border top+bottom
+		h := m.bodyHeight() - 1 // account for BodyBox border top+bottom
 		bw := m.bodyInnerWidth()
 		// Table widgets : resize BOTH height (to fill the viewport)
 		// AND column widths (proportionally to the declared widths
@@ -275,6 +429,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case connSwitchMsg:
+		// Endpoint just connected (or rotated). Render the active host
+		// in the status bar ; clear any prior error/warn since the new
+		// link works.
+		name := msg.active.Name
+		if name == "" {
+			name = msg.active.Address
+		}
+		if name == "" {
+			name = msg.active.Socket
+		}
+		m.conn = connStatus{level: ResilientEventInfo, msg: "● " + name}
+		m.logPane.append(ResilientEventInfo, "connected to "+name)
+		// Compute the identity rendered in the topbar's right side.
+		// SSH endpoint → "user@host" ; local-socket → "local".
+		switch {
+		case msg.active.Address != "":
+			user := msg.active.SSHUser
+			if user == "" {
+				// Strip any inline user@ prefix from Address so we
+				// reach the host part for the display.
+				user = "?"
+			}
+			host := msg.active.Address
+			if at := strings.IndexByte(host, '@'); at >= 0 {
+				if user == "?" {
+					user = host[:at]
+				}
+				host = host[at+1:]
+			}
+			m.identity = user + "@" + host
+		case msg.active.Socket != "":
+			m.identity = "local"
+		}
+		return m, nil
+
+	case connEventMsg:
+		// Dial failure / failover-exhausted. Replace the success line
+		// with the warning so the operator sees a degraded link.
+		m.conn = connStatus{level: msg.level, msg: msg.msg}
+		m.logPane.append(msg.level, msg.msg)
+		return m, nil
+
 	case resourceActionMsg:
 		if msg.err != nil {
 			m.setError(fmt.Sprintf("%s : %s", msg.action, msg.err))
@@ -283,6 +480,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if rm, ok := m.resource[msg.cfg]; ok {
 			return m, rm.loadCmd()
+		}
+		return m, nil
+
+	case openResourceConfirmMsg:
+		// Context menu picked a Confirm-gated action — flip the
+		// target ResourceListModel into its 2-step confirm
+		// prompt, mirroring the keyboard path in resources.go.
+		if rm, ok := m.resource[msg.cfg]; ok {
+			rm.confirmAction = msg.action
+			rm.confirmInput = ""
+			rm.confirmRow = msg.row
+			m.resource[msg.cfg] = rm
 		}
 		return m, nil
 
@@ -355,7 +564,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vms.loading = false
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
-			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID)
+			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
 			// Push fresh per-host counts to the hosts model so the
 			// "VMS" column reflects the new placement immediately —
 			// no need to wait for the next hostsLoadedMsg.
@@ -389,7 +598,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.projects.loading = false
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
-			m.projects.applyProjects(msg.resp, msg.counts)
+			m.projects.applyProjects(msg.resp, msg.counts, msg.tenants)
+			// Re-render the VMs tab so the new tenant lookup is
+			// applied to existing rows (first projects fetch
+			// arrives AFTER the first VMs fetch ; without this
+			// the PROJECT column stays unprefixed until the next
+			// refresh tick).
+			m.vms.refreshProjectColumn(m.projects.tenantNameForProject)
 		}
 		return m, nil
 
@@ -459,6 +674,22 @@ func (m Model) forwardToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 // goes through the normal global / tab-specific routes.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+
+	// --- Context menu : keyboard-triggered. ---
+	// "m" on a table row opens the per-row action menu. Keyboard
+	// is the PRIMARY trigger (terminals don't all forward
+	// Ctrl+Shift+Click reliably — many strip the modifiers, some
+	// fall back to right-click for paste). The mouse path in
+	// handleMouse remains as a bonus where it works.
+	if !m.menu.open && !m.palette.open && key == "m" {
+		items := m.buildContextMenu()
+		if len(items) > 0 {
+			m.menu.open = true
+			m.menu.items = items
+			m.menu.cursor = 0
+			return m, nil
+		}
+	}
 
 	// --- Context menu first : navigation captures everything. ---
 	if m.menu.open {
@@ -606,6 +837,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// --- Global keys. ---
 	switch key {
+	case "ctrl+b":
+		// Toggle the sidebar's collapsed (icon-only) mode. Useful
+		// on small terminals where the full catalogue + labels eat
+		// too much horizontal real estate. Mirrors VSCode's Ctrl+B
+		// muscle memory.
+		m.sidebarCollapsed = !m.sidebarCollapsed
+		// Re-resize tables since bodyInnerWidth changed.
+		h := m.bodyHeight() - 1
+		bw := m.bodyInnerWidth()
+		applyResize(&m.hosts.table, hostsColumns(), bw, h)
+		applyResize(&m.vms.table, vmsColumns(), bw, h)
+		applyResize(&m.projects.table, projectsColumns(), bw, h)
+		for _, rm := range m.resource {
+			applyResize(&rm.table, rm.cfg.Columns, bw, h)
+		}
+		return m, nil
 	case ":":
 		// Open the command palette. Lets the operator type a
 		// resource id (`networks`, `volumes`, …) ; Enter switches
@@ -804,6 +1051,27 @@ func (m Model) handleVMsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 		m.vms.logsTitle = name
 		m.vms.logsVP.SetContent("")
 		return m, loadVMLogsCmd(m.client, name, project)
+	case "a":
+		// Activate : flip admin status to active. Orthogonal to
+		// runtime state — the VM may already be `running`.
+		uuid := m.vms.selectedUUID()
+		name, project := m.vms.selected()
+		if uuid == "" {
+			m.setError("no VM selected")
+			return m, nil
+		}
+		return m, setVMStatusCmd(m.client, uuid, name, project, "active")
+	case "i":
+		// Inactivate : freeze the VM admin-side. Respawn skips,
+		// scheduler avoids ; runtime keeps going until operator
+		// explicitly stops.
+		uuid := m.vms.selectedUUID()
+		name, project := m.vms.selected()
+		if uuid == "" {
+			m.setError("no VM selected")
+			return m, nil
+		}
+		return m, setVMStatusCmd(m.client, uuid, name, project, "inactive")
 	}
 	var cmd tea.Cmd
 	m.vms.table, cmd = m.vms.table.Update(msg)
@@ -877,24 +1145,232 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.theme.helpView(m.width)
 	}
+	topbar := m.renderTopbar()
 	sidebar := m.renderSidebar()
 	body := m.renderBody()
-	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, body)
-	parts := []string{main}
+	// Resize the events viewport to fit the log-pane drawer ; the
+	// vp was sized for the BODY by handleResize, which would
+	// overflow + clip when the events tab is hosted in the log
+	// pane (operator-reported 2026-06-24 "le panneau events ne
+	// semble pas actif" — the LIVE header showed but lines were
+	// clipped). Inner rows = log-pane vp height minus 1 for the
+	// events sub-header.
+	eventsBody := ""
+	if m.logPane.activeTab == "events" {
+		innerRows := m.logPane.vp.Height - 1
+		if innerRows < 1 {
+			innerRows = 1
+		}
+		m.events.vp.Width = m.bodyInnerWidth()
+		m.events.vp.Height = innerRows
+		m.events.vp.SetContent(strings.Join(m.events.lines, "\n"))
+		if !m.events.userScrolled {
+			m.events.vp.GotoBottom()
+		}
+		eventsBody = m.events.View(m.bodyInnerWidth())
+	}
+	logPaneView := m.logPane.View(m.theme, m.bodyWidth(), eventsBody)
+	rightCol := lipgloss.JoinVertical(lipgloss.Left, body, logPaneView)
+	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, rightCol)
+	// Inject the drag grips AFTER JoinHorizontal so both sides of
+	// each boundary land on the same absolute Y / X — fixes the
+	// "grips droite et gauche ne sont pas alignés" the operator
+	// hit when each component computed its own middle.
+	//
+	// Frame junctions : the body lost its LEFT border + the log
+	// pane lost its LEFT border so the sidebar's right border `│`
+	// now carries the divider. Where the body's / log pane's
+	// horizontal borders cross it, swap `╮ │ ╯` for T-junctions
+	// (`┬ ├ ┴`) so the chrome reads as one frame with subdivisions.
+	// Also patch the log pane's top-right corner (`╮` → `┤`) so
+	// body's right border `│` flows down into the log pane's.
+	sidebarRightX := m.sidebarWidth() - 1
+	mainRightX := m.width - 1
+	logTopY := m.bodyHeight()
+	lastY := m.bodyHeight() + m.logPane.height() - 1
+	main = injectFrameJunctions(main, sidebarRightX, logTopY, lastY, mainRightX)
+	// Vertical drag (sidebar ↔ body) : single grip on the sidebar's
+	// right border (now the shared divider — body's left border was
+	// dropped) centered on the JOINED middle row. Length = 1/5 of
+	// the joined height.
+	if !m.sidebarCollapsed {
+		main = injectDragGripAtJoinedMid(main, sidebarRightX)
+	}
+	// Horizontal drag (body ↔ log pane) : single grip on the shared
+	// divider row. The body no longer carries its own bottom border
+	// (collapsed into the log pane's top border) so the divider is a
+	// single row at Y = bodyHeight() — the log pane's top border.
+	bodyMidX := m.sidebarWidth() + m.bodyWidth()/2
+	main = injectHorizontalDragGripAtY(main, m.bodyHeight(), bodyMidX)
+	parts := []string{topbar, main}
 	if m.palette.open {
 		parts = append(parts, m.palette.View(m.theme, m.width))
 	}
+	parts = append(parts, m.renderStatusBar())
+	base := strings.Join(parts, "\n")
+	// Context menu : overlay near the selected row instead of
+	// replacing the status bar. The previous "bottom strip"
+	// rendering was a layout shortcut ; the operator's directive
+	// 2026-06-23 : "le menu contextuel est a afficher en fenetre
+	// overflow, pas en bas". Splice the menu lines into the base
+	// at a computed (x, y) anchor so it visually floats over the
+	// body table.
 	if m.menu.open {
-		// Context menu pre-empts the status bar : the items + the
-		// nav hint are more useful right after a right-click than
-		// the timestamp / refresh chrome. Esc / item-click /
-		// shortcut all close the menu, after which the status bar
-		// returns on the next render.
-		parts = append(parts, m.renderContextMenu())
-	} else {
-		parts = append(parts, m.renderStatusBar())
+		base = m.overlayContextMenu(base)
 	}
-	return strings.Join(parts, "\n")
+	return base
+}
+
+// topbarHeight returns how many terminal rows the topbar occupies.
+// Drives mouse-coordinate translation : clicks deliver absolute
+// terminal Y, but sidebarHitRows / menuHitRow / body-row-math all
+// work in coordinates RELATIVE to their region. Every mouse Y must
+// have topbarHeight() subtracted before being compared.
+//
+// Today the topbar is exactly 1 line ("weft  <cluster>      user@host"
+// rendered with the Title style — no border yet). When we wrap it
+// in a bordered box, this returns 3 (top border + content + bottom).
+// Centralising the count here is the only thing that keeps the
+// mouse handlers honest across that change — a regression test in
+// app_test.go pins the contract.
+func (m Model) topbarHeight() int {
+	// renderTopbar produces a single styled line ; lipgloss.Height
+	// of the rendered string is the authoritative count + survives
+	// any future border-wrap refactor.
+	return lipgloss.Height(m.renderTopbar())
+}
+
+// renderTopbar draws the 1-line bar that sits above the sidebar +
+// body. Left side carries the product name + the cluster name (so
+// the operator always knows which cluster they're poking at) ; right
+// side surfaces the connection identity ("user@host" for SSH, "local"
+// for a Unix-socket endpoint) so the operator can't accidentally act
+// on the wrong cluster.
+//
+// Width-budget : exactly m.width cols. Trims left/right halves
+// proportionally on narrow terminals.
+func (m Model) renderTopbar() string {
+	// lipgloss.Style.Width(N) sets the OUTER width including padding
+	// but excluding border. TopbarBox = Border(1+1) + Padding(1+1) →
+	// content area visible width = Width - 2 (the padding). For the
+	// box's total output to match m.width, pass Width(m.width - 2)
+	// (excludes border) ; the inner content (the bar) must then
+	// target m.width - 4 visible cols (excludes border + padding).
+	innerForLipgloss := m.width - 2
+	if innerForLipgloss < 8 {
+		innerForLipgloss = 8
+	}
+	contentWidth := m.width - 4
+	if contentWidth < 6 {
+		contentWidth = 6
+	}
+
+	leftPlain := "weft"
+	if m.clusterName != "" {
+		leftPlain += "  " + m.clusterName
+	}
+	// Refresh timestamp moves out of the status bar (operator
+	// directive 2026-06-23, reiterated : "il y'a un affichage
+	// 'refreshed ...' sous les frames, a deplacer dans la top
+	// bar"). Format kept identical (`refreshed HH:MM:SS`) so the
+	// operator's habit doesn't change.
+	refreshedPlain := ""
+	if ts := m.activeRefreshTS(); !ts.IsZero() {
+		refreshedPlain = "refreshed " + ts.Format("15:04:05")
+	}
+	// Connection state dot : `●` coloured by the cp's health. Always
+	// rendered (operator directive 2026-06-23 "affiche le point avec
+	// pc en permanence avec une couleur"). 2 visible cols (`● `) so
+	// the truncation budget accounts for it.
+	connDotPlain := "● "
+	rightPlain := m.identity
+	// Compose the right cluster : [refreshed]  ●  [identity]. The
+	// conn dot is always present (just 2 cols) so we account for it
+	// here as part of the right-side width budget.
+	rightCombinedPlain := refreshedPlain
+	if rightCombinedPlain != "" {
+		rightCombinedPlain += "  " + connDotPlain
+	} else {
+		rightCombinedPlain = connDotPlain
+	}
+	if rightPlain != "" {
+		rightCombinedPlain += rightPlain
+	}
+	// Truncate left first if it would push right off the edge.
+	maxLeft := contentWidth - len(rightCombinedPlain) - 1
+	if maxLeft < len("weft") {
+		maxLeft = len("weft")
+	}
+	if len(leftPlain) > maxLeft {
+		if maxLeft > 1 {
+			leftPlain = leftPlain[:maxLeft-1] + "…"
+		} else {
+			leftPlain = leftPlain[:maxLeft]
+		}
+	}
+	// Truncate the combined right side if it still doesn't fit. We
+	// drop the refresh portion FIRST (less critical than identity).
+	rightBudget := contentWidth - len(leftPlain) - 1
+	if rightBudget < 0 {
+		rightBudget = 0
+	}
+	if len(rightCombinedPlain) > rightBudget {
+		// Try without refreshed first.
+		if refreshedPlain != "" && len(rightPlain) <= rightBudget {
+			refreshedPlain = ""
+			rightCombinedPlain = rightPlain
+		} else if rightBudget > 1 {
+			rightCombinedPlain = "…" + rightCombinedPlain[len(rightCombinedPlain)-(rightBudget-1):]
+		} else {
+			rightCombinedPlain = rightCombinedPlain[:rightBudget]
+		}
+	}
+
+	left := m.theme.Title.Render("weft")
+	if m.clusterName != "" {
+		cluster := strings.TrimPrefix(leftPlain, "weft")
+		cluster = strings.TrimLeft(cluster, " ")
+		if cluster != "" {
+			left += "  " + m.theme.StatusVal.Render(cluster)
+		}
+	}
+	right := ""
+	if refreshedPlain != "" {
+		right = m.theme.StatusVal.Render(refreshedPlain)
+	}
+	// Connection dot styled by level — green-ish (BadgeOK) when
+	// Info, amber (BadgeWarn) on warn, red (BadgeBad) on error or
+	// when there is no event yet (so the operator sees a hint that
+	// the link hasn't come up). Bold so the colour reads through.
+	var dotStyle = m.theme.BadgeBad
+	switch m.conn.level {
+	case ResilientEventInfo:
+		dotStyle = m.theme.BadgeOK
+	case ResilientEventWarn:
+		dotStyle = m.theme.BadgeWarn
+	case ResilientEventError:
+		dotStyle = m.theme.BadgeBad
+	}
+	if right != "" {
+		right += "  "
+	}
+	right += dotStyle.Render("●") + " "
+	if rightPlain != "" {
+		right += m.theme.Faint.Render(rightPlain)
+	}
+
+	used := lipgloss.Width(left) + lipgloss.Width(right)
+	pad := contentWidth - used
+	if pad < 0 {
+		pad = 0
+	}
+	bar := left + strings.Repeat(" ", pad) + right
+	// Drop the topbar's BOTTOM border so it doesn't stack on top of
+	// the main region's TOP border (= sidebar.top + body.top) —
+	// same trick as body↔log pane + sidebar↔body. injectFrameJunctions
+	// patches the corners where topbar's left/right `│` meets main's
+	// top `─` (`╭`→`├` and `╮`→`┤`) so the chrome reads as one frame.
+	return m.theme.TopbarBox.BorderBottom(false).Width(innerForLipgloss).Render(bar)
 }
 
 // sidebarWidth is the fixed horizontal slot the sidebar occupies,
@@ -908,14 +1384,21 @@ func (m Model) View() string {
 // Model.sidebarW. Floor at minSidebarWidth so labels stay legible ;
 // cap at maxSidebarWidth so the body region keeps a usable budget.
 const (
-	defaultSidebarWidth = 28
-	minSidebarWidth     = 16
-	maxSidebarWidth     = 60
+	defaultSidebarWidth   = 28
+	minSidebarWidth       = 16
+	maxSidebarWidth       = 60
+	collapsedSidebarWidth = 5 // icon-only mode : border + 1 char + border + padding
 )
 
 // sidebarWidth returns the current sidebar width, honoring the
 // operator's drag-resize when set or falling back to the default.
+// When sidebarCollapsed is true, returns the narrow icon-only width
+// regardless of any drag-set value (drag is disabled in collapsed
+// mode).
 func (m Model) sidebarWidth() int {
+	if m.sidebarCollapsed {
+		return collapsedSidebarWidth
+	}
 	if m.sidebarW > 0 {
 		return m.sidebarW
 	}
@@ -938,14 +1421,51 @@ type sidebarEntry struct {
 // sidebarSections is the ordered list of sections + their entries
 // the sidebar renders. Built once from tabLabels (core) +
 // resourceCatalogue (grouped by their Section attribute, sorted by
+// reorderEntries applies a per-section preferred ID order, with
+// unknown IDs preserved at the tail in their original catalogue
+// position. Only sections present in `entryOrder` are reshuffled.
+func reorderEntries(in []ResourceConfig, section string) []ResourceConfig {
+	entryOrder := map[string][]string{
+		"Storage": {"images", "volumes", "shares", "buckets", "volume-snapshots"},
+	}
+	pref, ok := entryOrder[section]
+	if !ok || len(in) == 0 {
+		return in
+	}
+	pos := map[string]int{}
+	for i, id := range pref {
+		pos[id] = i
+	}
+	known := make([]ResourceConfig, 0, len(in))
+	unknown := make([]ResourceConfig, 0, len(in))
+	for _, r := range in {
+		if _, ok := pos[r.ID]; ok {
+			known = append(known, r)
+		} else {
+			unknown = append(unknown, r)
+		}
+	}
+	sort.SliceStable(known, func(i, j int) bool {
+		return pos[known[i].ID] < pos[known[j].ID]
+	})
+	return append(known, unknown...)
+}
+
 // title within each group). Sections list section.* of the
 // catalogue in the same order operators expect : Network, Storage,
 // Compute, Identity, Admin.
 func sidebarSections() []sidebarSection {
 	sections := []sidebarSection{{
-		Header:  "core",
+		Header:  "Core",
 		Entries: coreEntries(),
 	}}
+	// Drop the Core section header when all its core entries got
+	// relocated elsewhere (Hosts → admin, VMs → compute, Projects
+	// → identity, Events → log-pane tabbar). Leaves the sidebar
+	// starting on the first real section.
+	if len(sections) == 1 && len(sections[0].Entries) == 0 {
+		sections = nil
+	}
 	// Group the catalogue by Section.
 	groups := map[string][]ResourceConfig{}
 	order := []string{}
@@ -974,21 +1494,61 @@ func sidebarSections() []sidebarSection {
 		}
 	}
 	for _, sec := range ordered {
-		entries := make([]sidebarEntry, 0, len(groups[sec]))
+		entries := make([]sidebarEntry, 0, len(groups[sec])+2)
+		// VMs belongs to the COMPUTE section. First entry.
+		if strings.ToLower(sec) == "compute" {
+			entries = append(entries, sidebarEntry{
+				tab:      tabVMs,
+				label:    "VMs",
+				shortcut: "2",
+			})
+		}
+		// Per-section preferred entry order. Today only Storage
+		// needs it ("images" above "volumes" per 2026-06-23 operator
+		// directive — base templates read before the snapshots
+		// they spawn). Unknown IDs land at the end in catalogue
+		// order, same as the section ordering above.
+		groups[sec] = reorderEntries(groups[sec], sec)
 		for _, r := range groups[sec] {
 			entries = append(entries, sidebarEntry{
 				resourceID: r.ID,
 				label:      r.Title,
 				shortcut:   "·",
 			})
+			// Hosts belongs under Racks (AZ → Rack → Host hierarchy).
+			// Insert inline right after the Racks entry. Shortcut
+			// "1" still binds to tabHosts.
+			if strings.ToLower(sec) == "admin" && r.ID == "racks" {
+				entries = append(entries, sidebarEntry{
+					tab:      tabHosts,
+					label:    "Hosts",
+					shortcut: "1",
+				})
+			}
+			// Projects belongs under Tenants (Tenant → Project
+			// hierarchy) — operator directive 2026-06-23 "les
+			// projets devraient etre classé sous les tenants".
+			// Insert inline right after the Tenants entry, in the
+			// identity section. Shortcut "3" still binds to it.
+			if strings.ToLower(sec) == "identity" && r.ID == "tenants" {
+				entries = append(entries, sidebarEntry{
+					tab:      tabProjects,
+					label:    "Projects",
+					shortcut: "3",
+				})
+			}
 		}
 		sections = append(sections, sidebarSection{
-			Header:  strings.ToLower(sec),
+			// Section headers keep the catalogue's CamelCase
+			// (Network / Storage / Compute / Identity / Admin)
+			// per the 2026-06-23 directive : "met une lettre
+			// majuscule aux catégories dans la sidebar".
+			Header:  sec,
 			Entries: entries,
 		})
 	}
 	sections = append(sections, sidebarSection{
-		Header: "more",
+		Header: "More",
 		Entries: []sidebarEntry{
 			{label: "palette", shortcut: "^P"},
 			{label: "help", shortcut: "?"},
@@ -1006,13 +1566,21 @@ type sidebarSection struct {
 // entries. The shortcut digit doubles as the keyboard accelerator
 // the legacy 1..4 keymap already drives.
 func coreEntries() []sidebarEntry {
-	out := make([]sidebarEntry, len(tabLabels))
+	out := make([]sidebarEntry, 0, len(tabLabels))
 	for i, label := range tabLabels {
-		out[i] = sidebarEntry{
+		// Hosts → admin (under Racks) ; VMs → compute (first) ;
+		// Projects → identity (under Tenants) ; Events → log pane
+		// tabbar (operator 2026-06-24). Keyboard shortcuts
+		// 1/2/3/4 still bind to their respective tabs even though
+		// they're no longer in the `core` section.
+		if tab(i) == tabHosts || tab(i) == tabVMs || tab(i) == tabProjects || tab(i) == tabEvents {
+			continue
+		}
+		out = append(out, sidebarEntry{
 			tab:      tab(i),
 			label:    label,
 			shortcut: fmt.Sprintf("%d", i+1),
-		}
+		})
 	}
 	return out
 }
@@ -1024,26 +1592,219 @@ func coreEntries() []sidebarEntry {
 // Admin). Click any entry to jump to it ; the active entry picks
 // up the SidebarItemActive style.
 func (m Model) renderSidebar() string {
-	var b strings.Builder
-	head := "weft"
-	if m.clusterName != "" {
-		head += "\n" + m.clusterName
-	}
-	b.WriteString(m.theme.Title.Render(head))
-	b.WriteString("\n")
+	// Build the full sidebar content (every section + every entry)
+	// into a slice of lines first, then slice by sidebarOffset
+	// before passing it to lipgloss.
+	allLines := make([]string, 0, 40)
 	for _, sec := range sidebarSections() {
-		b.WriteString(m.theme.SidebarSection.Render(sec.Header))
-		b.WriteString("\n")
+		if m.sidebarCollapsed {
+			allLines = append(allLines, "")
+		} else {
+			allLines = append(allLines, m.theme.SidebarSection.Render(sec.Header))
+		}
 		for _, e := range sec.Entries {
 			active := m.isSidebarEntryActive(e)
-			b.WriteString(sidebarRow(m.theme, e.shortcut, e.label, active))
+			if m.sidebarCollapsed {
+				allLines = append(allLines, sidebarRowCollapsed(m.theme, e.shortcut, active))
+			} else {
+				allLines = append(allLines, sidebarRow(m.theme, e.shortcut, e.label, active))
+			}
+		}
+	}
+
+	// Available content rows inside the SidebarBox : the box's
+	// total Height is sidebarInnerHeight, minus 2 for vertical
+	// padding (Padding(1,1)) — that's how many rows of payload
+	// fit before lipgloss starts clipping.
+	visibleRows := m.sidebarInnerHeight() - 2
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+
+	offset := m.sidebarOffset
+	if offset < 0 {
+		offset = 0
+	}
+	maxOffset := len(allLines) - visibleRows
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	end := offset + visibleRows
+	if end > len(allLines) {
+		end = len(allLines)
+	}
+	window := allLines[offset:end]
+
+	// Scroll indicators : "↑ N more" / "↓ N more" rendered on
+	// the first/last row when content is clipped. Tells the
+	// operator there's catalogue beyond the visible window —
+	// without this the report "AZ and Racks still missing" would
+	// look like a real bug instead of a viewport overflow.
+	if offset > 0 && len(window) > 0 {
+		window[0] = m.theme.Faint.Render(fmt.Sprintf("↑ %d more", offset))
+	}
+	if offset < maxOffset && len(window) > 0 {
+		window[len(window)-1] = m.theme.Faint.Render(fmt.Sprintf("↓ %d more", maxOffset-offset))
+	}
+
+	var b strings.Builder
+	for i, l := range window {
+		b.WriteString(l)
+		if i < len(window)-1 {
 			b.WriteString("\n")
 		}
 	}
+	// MaxHeight clips overflow ; Height alone only PADS UP (lipgloss
+	// quirk verified by probe). Without MaxHeight, a sidebar whose
+	// catalogue + section headers exceed bodyHeight would render
+	// at full content size + push the terminal to scroll, losing
+	// the top of the frame (the operator-reported regression).
+	// MaxHeight includes the border ; +2 to leave room for the
+	// rounded top/bottom.
+	// The drag grip is injected by View() AFTER JoinHorizontal so
+	// the sidebar's right grip + body's left grip align on the
+	// same absolute Y. See injectDragGripAtJoinedMid.
 	return m.theme.SidebarBox.
 		Width(m.sidebarWidth() - 2).
-		Height(m.bodyHeight()).
+		Height(m.sidebarInnerHeight()).
+		MaxHeight(m.sidebarInnerHeight() + 2).
 		Render(b.String())
+}
+
+// injectDragGripAtJoinedMid overwrites column x of the middle
+// ROWS in `rendered` with the heavy `┃` glyph. Grip length = 1/5
+// of the rendered height (centered) — scales with terminal size.
+// Floored at 3 rows.
+//
+// MUST be called AFTER JoinHorizontal so both grips of a shared
+// boundary (sidebar right col + body left col) land on the same
+// absolute Y range — the operator's "grips droite et gauche ne
+// sont pas alignés" was caused by each component computing its
+// own midpoint pre-join.
+func injectDragGripAtJoinedMid(rendered string, x int) string {
+	lines := strings.Split(rendered, "\n")
+	if len(lines) < 5 {
+		return rendered
+	}
+	gripLen := len(lines) / 5
+	if gripLen < 3 {
+		gripLen = 3
+	}
+	half := gripLen / 2
+	mid := len(lines) / 2
+	for offset := -half; offset <= half; offset++ {
+		y := mid + offset
+		if y < 0 || y >= len(lines) {
+			continue
+		}
+		lines[y] = overwriteRuneAt(lines[y], x, '┃')
+	}
+	return strings.Join(lines, "\n")
+}
+
+// injectFrameJunctions makes the sidebar's right border + log
+// pane's top-right corner read as T-junctions where horizontal
+// borders cross — otherwise the body's and log pane's top borders
+// look like floating fragments next to the sidebar's closed
+// rounded box. Sites :
+//
+//	(0,             0)         `╭` → `├`   topbar's left `│` continues down
+//	(sidebarRightX, 0)         `╮` → `┬`   body top horizontal joins
+//	(sidebarRightX, logTopY)   `│` → `├`   log pane top horizontal
+//	(sidebarRightX, lastY)     `╯` → `┴`   log pane bottom horizontal
+//	(mainRightX,    0)         `╮` → `┤`   topbar's right `│` continues down
+//	(mainRightX,   logTopY)    `╮` → `┤`   body right vertical joins
+//
+// Caller passes the rendered "main" region (sidebar+body+log pane
+// already joined). Coordinates are within main, NOT the full View.
+//
+// Junction glyphs are square ; the surrounding frame uses rounded
+// corners. The mix is intentional — there is no rounded variant of
+// `┬ ┴ ├ ┤` in Unicode, and at terminal-font sizes the difference
+// is imperceptible.
+func injectFrameJunctions(rendered string, sidebarRightX, logTopY, lastY, mainRightX int) string {
+	lines := strings.Split(rendered, "\n")
+	put := func(y, x int, swap rune) {
+		if y < 0 || y >= len(lines) {
+			return
+		}
+		lines[y] = overwriteRuneAt(lines[y], x, swap)
+	}
+	put(0, 0, '├')
+	put(0, sidebarRightX, '┬')
+	put(0, mainRightX, '┤')
+	put(logTopY, sidebarRightX, '├')
+	put(lastY, sidebarRightX, '┴')
+	put(logTopY, mainRightX, '┤')
+	return strings.Join(lines, "\n")
+}
+
+// injectHorizontalDragGripAtY overwrites a horizontal span of the
+// row at line index y in `rendered` with the heavy `━` glyph.
+// Grip width = 1/5 of the line's visible width (centered on midX),
+// floored at 3 cols. Scales with terminal width.
+func injectHorizontalDragGripAtY(rendered string, y, midX int) string {
+	lines := strings.Split(rendered, "\n")
+	if y < 0 || y >= len(lines) {
+		return rendered
+	}
+	visibleW := len([]rune(stripANSI(lines[y])))
+	gripLen := visibleW / 5
+	if gripLen < 3 {
+		gripLen = 3
+	}
+	half := gripLen / 2
+	for offset := -half; offset <= half; offset++ {
+		lines[y] = overwriteRuneAt(lines[y], midX+offset, '━')
+	}
+	return strings.Join(lines, "\n")
+}
+
+// overwriteRuneAt swaps the rune at visible column x of line for
+// the given rune. ANSI escape sequences are copied verbatim ;
+// multi-byte UTF-8 runes are walked safely.
+func overwriteRuneAt(line string, x int, swap rune) string {
+	plain := stripANSI(line)
+	plainRunes := []rune(plain)
+	if x < 0 || x >= len(plainRunes) {
+		return line
+	}
+	var b strings.Builder
+	visible := 0
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' && i+1 < len(line) && line[i+1] == '[' {
+			b.WriteByte(line[i])
+			b.WriteByte(line[i+1])
+			i += 2
+			for i < len(line) {
+				c := line[i]
+				b.WriteByte(c)
+				i++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		r, sz := utf8DecodeRune(line[i:])
+		if visible == x {
+			b.WriteRune(swap)
+		} else {
+			b.WriteRune(r)
+		}
+		visible++
+		i += sz
+	}
+	return b.String()
+}
+
+// utf8DecodeRune is a thin wrapper over utf8.DecodeRuneInString that
+// keeps the call site terse + lets us swap in test seams later.
+func utf8DecodeRune(s string) (rune, int) {
+	return utf8.DecodeRuneInString(s)
 }
 
 // isSidebarEntryActive returns true when the entry corresponds to
@@ -1064,20 +1825,91 @@ func (m Model) isSidebarEntryActive(e sidebarEntry) bool {
 // sidebarRow renders one entry : "<shortcut> <label>". Active rows
 // pick up the SidebarItemActive style ; inactive rows pad with two
 // spaces so the label column lines up regardless of selection.
+// sidebarRow renders one entry. Numeric shortcuts (core entries
+// "1"/"2"/"3"/"4") render as a bullet `·` like the catalogue
+// entries — all sidebar rows share the same visual class. The
+// 1..4 keyboard shortcuts still work, they're just not displayed.
+//
+// Active rows REPLACE the bullet with `▸` so the label X position
+// stays identical between active + inactive states (the operator
+// directive 2026-06-23 : "ca evite de deplacer l'item vers la
+// droite").
 func sidebarRow(theme Theme, shortcut, label string, active bool) string {
-	if active {
-		return theme.SidebarItemActive.Render("▸ " + shortcut + " " + label)
+	bullet := shortcut + " "
+	if isNumericShortcut(shortcut) {
+		bullet = "· "
+	} else if shortcut == "" {
+		bullet = "  "
 	}
-	return theme.SidebarItem.Render(shortcut + " " + label)
+	if active {
+		return theme.SidebarItemActive.Render("▸ " + label)
+	}
+	return theme.SidebarItem.Render(bullet + label)
 }
 
-// bodyHeight is the vertical slot the body + sidebar region uses.
-// Subtracts the status bar (border + content = 2 lines) from the
-// terminal height ; matches the legacy "Reserve 3 lines : tabs row
-// + blank + status bar" budget so per-tab tables still get the
-// same usable rows.
+// sidebarRowCollapsed renders a 1-col icon-only row used when the
+// sidebar is in collapsed mode (Ctrl+B toggle). Just the shortcut
+// glyph ; active rows pick up the active colour so the operator
+// still knows which view they're on. Numeric shortcuts stay visible
+// here because they ARE the icon — without them the collapsed row
+// would be empty.
+func sidebarRowCollapsed(theme Theme, shortcut string, active bool) string {
+	if active {
+		return theme.SidebarItemActive.Render(shortcut)
+	}
+	return theme.SidebarItem.Render(shortcut)
+}
+
+// isNumericShortcut reports whether the shortcut is a single ASCII
+// digit ("1".."9"). Drives the hide-numbering logic in sidebarRow.
+func isNumericShortcut(s string) bool {
+	return len(s) == 1 && s[0] >= '0' && s[0] <= '9'
+}
+
+// bodyHeight is the TOTAL rendered height of the body region —
+// including its rounded BodyBox border. Despite the name "inner"
+// historically, renderBody passes Height(bodyHeight() - 1) into
+// BodyBox so the output (border + content) ends up bodyHeight()
+// lines exactly. Same convention for downstream sites.
+//
+// View() total = topbarHeight + sidebar/body row + statusBar (2).
+// sidebar/body row = max(sidebar rendered, right column rendered).
+// right column = bodyHeight() + logPane.height() (both already
+// include their own borders).
+//
+// Solving total == m.height :
+//   topbarHeight + bodyHeight + logPane.height + 2 == m.height
+//   bodyHeight = m.height - 2 - logPane.height() - topbarHeight()
+//
+// topbarHeight() reads renderTopbar()'s line count at runtime so any
+// future change to the topbar's framing automatically reflows the
+// math.
+//
+// Floor at 3 so the body always has at least 1 content row when
+// the operator drags the divider almost all the way up — the user
+// wants the horizontal drawer to be able to rise up to (just under)
+// the main panel's content.
+//
+// Chrome budget : topbarHeight() + bodyHeight + logPane.height() + 1
+// (status bar = single line, no border anymore) == m.height.
 func (m Model) bodyHeight() int {
-	h := m.height - 4
+	h := m.height - 1 - m.logPane.height() - m.topbarHeight()
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// sidebarInnerHeight returns the Height the sidebar wants so its
+// TOTAL rendered output equals the right column (body+logpane).
+// Right column = bodyHeight + logPane.height (both already include
+// their borders). Sidebar rendered = sidebarInner + 2 (rounded
+// border). Solving for parity :
+//
+//   sidebarInner + 2 = bodyHeight + logPane.height
+//   sidebarInner    = bodyHeight + logPane.height - 2
+func (m Model) sidebarInnerHeight() int {
+	h := m.bodyHeight() + m.logPane.height() - 2
 	if h < 5 {
 		h = 5
 	}
@@ -1105,17 +1937,40 @@ func (m Model) renderBody() string {
 			content = rm.View(inner)
 		}
 	}
+	// MaxHeight defensive cap : the table widget normally honours its
+	// applyResize'd height, but the create-form / detail-drawer
+	// overlays can exceed it. Without MaxHeight an overflow pushes
+	// the layout down + cuts the top of the sidebar's frame.
+	// Drop the body's BOTTOM border (so it doesn't stack on top of
+	// the log pane's TOP border) AND its LEFT border (so it doesn't
+	// stack against the sidebar's RIGHT border) — same operator
+	// request, applied symmetrically to both drawers : the divider
+	// reads as a single line on each side, and the body reclaims
+	// 1 row + 1 column of usable space. Height = bodyHeight - 1 (only
+	// top border kept) ; Width = bodyWidth - 1 (only right border
+	// kept) — totals stay (bodyWidth × bodyHeight).
+	// Keep a 1-col horizontal padding on each side so the table
+	// content doesn't touch the body's right border — operator
+	// directive 2026-06-24 "il faudrait avoir un leger padding
+	// entre les frames et les contenus". Still no bottom / left
+	// border (they collapsed into the log pane + sidebar borders).
 	return m.theme.BodyBox.
-		Width(m.bodyWidth() - 2).
-		Height(m.bodyHeight() - 2).
+		BorderBottom(false).
+		BorderLeft(false).
+		PaddingLeft(1).
+		PaddingRight(1).
+		Width(m.bodyWidth() - 1).
+		Height(m.bodyHeight() - 1).
+		MaxHeight(m.bodyHeight()).
 		Render(content)
 }
 
 // bodyInnerWidth is what the body content actually has to draw on,
-// once the BodyBox border (2 cols) + padding (2 cols) is subtracted
-// from bodyWidth. Tables use this for column width allocation.
+// once the BodyBox border (1 col — only right is kept) + the
+// 2 cols of horizontal padding are subtracted from bodyWidth.
+// Tables use this for column width allocation.
 func (m Model) bodyInnerWidth() int {
-	w := m.bodyWidth() - 4
+	w := m.bodyWidth() - 3
 	if w < 16 {
 		w = 16
 	}
@@ -1132,6 +1987,199 @@ func (m Model) bodyWidth() int {
 		w = 20
 	}
 	return w
+}
+
+// overlayContextMenu splices the rendered context menu into base
+// at a computed anchor near the selected row. Returns base
+// unchanged when the menu is closed or empty.
+//
+// Anchor :
+//   - X : just past the sidebar + 4 cols of body padding so the menu
+//     sits inside the body region but doesn't cover its leftmost
+//     content (UUID / NAME column).
+//   - Y : terminal Y of the active table's selected row + 1 (so the
+//     menu drops "below" the cursor like a desktop context menu).
+//     When the row is near the bottom of the body, the menu flips
+//     upward so it stays visible.
+//
+// Implementation : the base View is a string of lines ; the menu is
+// also a multi-line string. We split both, overlay the menu lines
+// into the base lines at (anchorX, anchorY) by character position
+// — keeping the ANSI styles intact via stripANSI math for the
+// length count, then write the menu bytes verbatim.
+func (m Model) overlayContextMenu(base string) string {
+	if !m.menu.open || len(m.menu.items) == 0 {
+		return base
+	}
+	menu := m.renderContextMenuFloating()
+	if menu == "" {
+		return base
+	}
+	menuLines := strings.Split(menu, "\n")
+	baseLines := strings.Split(base, "\n")
+	// Anchor : selected-row Y + 1, or flip upward if too close to
+	// the bottom of the body region.
+	tbl := (&m).activeTable()
+	rowIdx := 0
+	if tbl != nil {
+		rowIdx = tbl.Cursor()
+	}
+	// Body region starts at terminal Y = topbarHeight() ; the table
+	// header consumes 2 rows (top border + header line), so the
+	// first data row sits at topbarHeight + 2.
+	bodyTop := m.topbarHeight()
+	anchorY := bodyTop + 2 + rowIdx + 1 // just below the selected row
+	menuHeight := len(menuLines)
+	bodyBottom := bodyTop + m.bodyHeight()
+	if anchorY+menuHeight > bodyBottom {
+		// Flip upward so the menu fits.
+		anchorY = bodyTop + 2 + rowIdx - menuHeight
+		if anchorY < bodyTop+1 {
+			anchorY = bodyTop + 1
+		}
+	}
+	// X anchor inside the body region. sidebarWidth + 4 puts the
+	// menu past the BodyBox border + 1 col of padding.
+	anchorX := m.sidebarWidth() + 4
+
+	for i, line := range menuLines {
+		y := anchorY + i
+		if y < 0 || y >= len(baseLines) {
+			continue
+		}
+		baseLines[y] = overlayLineAt(baseLines[y], line, anchorX, m.width)
+	}
+	return strings.Join(baseLines, "\n")
+}
+
+// renderContextMenuFloating produces a small, self-contained menu
+// box — same content as the legacy renderContextMenu but sized as a
+// floating window rather than a full-width strip. Uses BodyBox's
+// rounded border so the overlay reads as a "panel" rather than a
+// banner. Width is computed from actual content + chrome so labels
+// + shortcuts always fit cleanly (no cropped text).
+func (m Model) renderContextMenuFloating() string {
+	if !m.menu.open || len(m.menu.items) == 0 {
+		return ""
+	}
+	// Visible width of one row = label + "  [" (3) + shortcut + "]"
+	// (1) = label + shortcut + 4. Constant chrome ; no marker on the
+	// active row (colour conveys selection).
+	contentWidth := 0
+	for _, it := range m.menu.items {
+		l := lipgloss.Width(it.label) + lipgloss.Width(it.shortcut) + 4
+		if l > contentWidth {
+			contentWidth = l
+		}
+	}
+	footer := "↑↓ select · ↵ run · Esc close"
+	if w := lipgloss.Width(footer); w > contentWidth {
+		contentWidth = w
+	}
+	// Floor : 20 cols so the box never collapses on a 1-item menu
+	// with a short label.
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	var b strings.Builder
+	for i, it := range m.menu.items {
+		// No indentation marker : the active row is distinguished
+		// by colour alone (per the operator's directive 2026-06-23
+		// "le changement de couleur suffit a avoir ou on est").
+		// Each row is padded to contentWidth so the colour highlight
+		// of the active row covers the full box width.
+		row := it.label + "  [" + it.shortcut + "]"
+		if w := lipgloss.Width(row); w < contentWidth {
+			row += strings.Repeat(" ", contentWidth-w)
+		}
+		if i == m.menu.cursor {
+			b.WriteString(m.theme.SidebarItemActive.Render(row))
+		} else {
+			b.WriteString(m.theme.SidebarItem.Render(row))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(m.theme.Faint.Render(footer))
+	// BodyBox adds Padding(0, 1) → +2 cols outer ; Border → +2.
+	// Pass Width that includes the padding (lipgloss convention) so
+	// the rendered output is contentWidth + 4 cols total.
+	return m.theme.BodyBox.Width(contentWidth + 2).Render(b.String())
+}
+
+// overlayLineAt writes overlay over base starting at column anchorX.
+//
+// Robust algorithm — the previous splice tried to keep base's ANSI
+// styles around the menu, but the math drifted under accumulated
+// CSI sequences and the menu ended up shifted horizontally (the
+// operator-reported regression "ne va toujours pas pour le menu
+// contextuel, il doit etre afficher au dessus du reste sans
+// decallage"). This version trades style fidelity on the 6 overlaid
+// lines for ROCK-SOLID alignment :
+//
+//   1. Strip ANSI from base → plain text.
+//   2. Pad plain to `width` so anchorX + overlayWidth always fits.
+//   3. Re-render the line as : plain[0:anchorX] + overlay +
+//      plain[anchorX+overlayWidth:].
+//
+// The 6 lines under the menu lose their original colors (they
+// re-render as plain text + the menu's styled box on top). Operators
+// see solid menu placement instead of a kaleidoscope of mis-aligned
+// columns ; the original styles return as soon as the menu closes.
+func overlayLineAt(base, overlay string, anchorX, width int) string {
+	plain := stripANSI(base)
+	overlayPlain := stripANSI(overlay)
+	ow := len([]rune(overlayPlain))
+
+	// Pad plain base to at least width cols so the slicing math
+	// below is always valid.
+	plainRunes := []rune(plain)
+	if len(plainRunes) < width {
+		plainRunes = append(plainRunes, []rune(strings.Repeat(" ", width-len(plainRunes)))...)
+	}
+
+	if anchorX < 0 {
+		anchorX = 0
+	}
+	if anchorX > len(plainRunes) {
+		anchorX = len(plainRunes)
+	}
+	end := anchorX + ow
+	if end > len(plainRunes) {
+		end = len(plainRunes)
+	}
+	prefix := string(plainRunes[:anchorX])
+	suffix := string(plainRunes[end:])
+
+	out := prefix + overlay + suffix
+	// Cap to width — strip any padding past the terminal's right
+	// edge. Use rune count for the cap on the plain side.
+	plainOut := stripANSI(out)
+	if width > 0 && len([]rune(plainOut)) > width {
+		// Re-walk to truncate while keeping ANSI codes from overlay
+		// (they're in the middle ; the trailing plain runes go
+		// last). Simpler : just rune-slice the plain output and
+		// re-inject the overlay block as-is.
+		plainOutRunes := []rune(plainOut)
+		plainOutRunes = plainOutRunes[:width]
+		// Plain truncated output ; the styled overlay is inside it
+		// already since we built `out` with overlay verbatim.
+		// Re-construct : take the styled prefix bytes up to anchorX
+		// (plain), then overlay, then trimmed suffix.
+		newSuffixLen := width - anchorX - ow
+		if newSuffixLen < 0 {
+			newSuffixLen = 0
+		}
+		trimSuffix := ""
+		if len([]rune(suffix)) > newSuffixLen {
+			trimSuffix = string([]rune(suffix)[:newSuffixLen])
+		} else {
+			trimSuffix = suffix
+		}
+		out = prefix + overlay + trimSuffix
+		_ = plainOutRunes
+	}
+	return out
 }
 
 // renderContextMenu draws the menu strip that replaces the status
@@ -1236,6 +2284,7 @@ func (m Model) buildContextMenu() []contextMenuItem {
 		return items
 	case tabVMs:
 		name, project := m.vms.selected()
+		uuid := m.vms.selectedUUID()
 		if name == "" {
 			return nil
 		}
@@ -1243,10 +2292,74 @@ func (m Model) buildContextMenu() []contextMenuItem {
 			{label: "Start", shortcut: "s", action: startVMCmd(m.client, name, project)},
 			{label: "Restart", shortcut: "R", action: restartVMCmd(m.client, name, project)},
 			{label: "Stop…", shortcut: "S", action: openVMConfirmStopCmd(name, project)},
+			{label: "Activate", shortcut: "a", action: setVMStatusCmd(m.client, uuid, name, project, "active")},
+			{label: "Inactivate", shortcut: "i", action: setVMStatusCmd(m.client, uuid, name, project, "inactive")},
 			{label: "Logs", shortcut: "l", action: loadVMLogsCmd(m.client, name, project)},
 		}
+	case tabResource:
+		// Uniformise : every resource panel surfaces its catalogue
+		// Actions in the context menu. Operator directive
+		// 2026-06-24 "uniformise la tui pour avoir le menu
+		// contextuel actif partout".
+		rm, ok := m.resource[m.currentResource]
+		if !ok {
+			return nil
+		}
+		row := rm.selected()
+		if row == nil {
+			return nil
+		}
+		items := make([]contextMenuItem, 0, len(rm.cfg.Actions))
+		for _, a := range rm.cfg.Actions {
+			items = append(items, contextMenuItem{
+				label:    actionLabel(a),
+				shortcut: a.Key,
+				action:   resourceActionCmd(rm.client, rm.cfg, a, row),
+			})
+		}
+		return items
 	}
 	return nil
+}
+
+// actionLabel renders the menu entry text — adds "…" when the
+// action requires a confirmation step so the operator sees the
+// 2-step contract at a glance.
+func actionLabel(a ResourceAction) string {
+	if a.Confirm != "" {
+		return strings.Title(a.Label) + "…"
+	}
+	return strings.Title(a.Label)
+}
+
+// resourceActionCmd wraps a catalogue ResourceAction into a tea.Cmd
+// that runs the Do closure with a 20s context + emits the same
+// resourceActionMsg the ResourceListModel's keyboard path uses.
+// Confirm-gated actions go through openResourceConfirmCmd instead
+// so the existing 2-step UX kicks in.
+func resourceActionCmd(client weftv1.WeftAgentClient, cfg ResourceConfig, a ResourceAction, row map[string]any) tea.Cmd {
+	if a.Confirm != "" {
+		return openResourceConfirmCmd(cfg.ID, a.Key, row)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		mm, err := a.Do(ctx, client, row)
+		return resourceActionMsg{cfg: cfg.ID, action: a.Key, row: row, msg: mm, err: err}
+	}
+}
+
+// openResourceConfirmMsg flips ResourceListModel into its confirm
+// prompt for the named action / row — used by the context menu when
+// the picked action is Confirm-gated.
+type openResourceConfirmMsg struct {
+	cfg    string
+	action string
+	row    map[string]any
+}
+
+func openResourceConfirmCmd(cfg, action string, row map[string]any) tea.Cmd {
+	return func() tea.Msg { return openResourceConfirmMsg{cfg: cfg, action: action, row: row} }
 }
 
 // openHostDetailCmd / openHostConfirmRemoveCmd / openVMConfirmStopCmd
@@ -1299,7 +2412,19 @@ func (m Model) sidebarHitRows() map[int]sidebarEntry {
 			if !entryClickable(e) {
 				continue
 			}
-			needle := e.shortcut + " " + e.label
+			// Needle mirrors sidebarRow : inactive rows render as
+			// "· <label>" (or "<shortcut> <label>" for catalogue) ;
+			// active rows render as "▸ <label>" (bullet replaced,
+			// not prepended). Search for the LABEL substring — it
+			// appears in both forms, no need to branch on active
+			// state.
+			var needle string
+			switch {
+			case m.sidebarCollapsed:
+				needle = e.shortcut
+			default:
+				needle = e.label
+			}
 			for y, line := range lines {
 				if _, taken := out[y]; taken {
 					continue
@@ -1355,29 +2480,73 @@ func stripANSI(s string) string {
 // Motion + non-left buttons are ignored — they would only add
 // noise (hover highlighting isn't worth the redraw cost here).
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Wheel events inside the log pane scroll the pane's viewport
+	// instead of the table. The pane sits at the bottom : its top
+	// row = (bodyHeight + 1 sidebar/body row gap). Detect by Y range.
+	// Log pane bounds in ABSOLUTE terminal Y : topbar first, then
+	// body (bodyHeight + 2 lines for BodyBox border = body region
+	// total), then the log pane stacked under the body in the right
+	// column. Forgetting topbarHeight() here misses wheel events
+	// on the pane on small terminals.
+	topOfPane := m.topbarHeight() + m.bodyHeight()
+	bottomOfPane := topOfPane + m.logPane.height() - 1
+	inPane := msg.Y >= topOfPane && msg.Y <= bottomOfPane
+	// Tab-strip rectangle inside the pane : 3 lines for the tab
+	// boxes, starting 1 line below the pane's top border. X 0..N
+	// relative to the pane's left edge (which is sidebarWidth()).
+	tabStripTop := topOfPane + 1
+	tabStripBottom := tabStripTop + 2 // 3 lines : top border, label, bottom border
+	inTabStrip := msg.Y >= tabStripTop && msg.Y <= tabStripBottom
+	// Sidebar wheel handling : when the pointer is over the
+	// sidebar (X < sidebarWidth, Y inside the body row), the wheel
+	// scrolls the sidebar offset so entries past the visible
+	// bottom (AZs, Racks, Hosts, Plugins on a short terminal)
+	// stay reachable. Operator directive 2026-06-23 "dans la TUI
+	// il manque toujours les AZ et les racks".
+	inSidebar := !m.sidebarCollapsed && msg.X < m.sidebarWidth()-1 && msg.Y >= m.topbarHeight() && msg.Y < m.topbarHeight()+m.bodyHeight()
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
+		if inSidebar {
+			if m.sidebarOffset > 0 {
+				m.sidebarOffset--
+			}
+			return m, nil
+		}
+		if inPane {
+			m.logPane.vp.LineUp(2)
+			m.logPane.follow = false
+			return m, nil
+		}
 		m.scrollActiveTable(-1)
 		return m, nil
 	case tea.MouseButtonWheelDown:
+		if inSidebar {
+			m.sidebarOffset++
+			return m, nil
+		}
+		if inPane {
+			m.logPane.vp.LineDown(2)
+			if m.logPane.vp.AtBottom() {
+				m.logPane.follow = true
+			}
+			return m, nil
+		}
 		m.scrollActiveTable(1)
 		return m, nil
 	case tea.MouseButtonRight:
-		// Right-click acts on the release event so a click-drag-
-		// release doesn't open the menu off-row.
+		// Right-click context menu. macOS touchpad maps the two-
+		// finger tap to a right-click — the natural gesture for a
+		// context menu. Terminals that bind right-click to paste
+		// will conflict, but the keyboard `m` shortcut + the
+		// Ctrl+Shift+Left fallback below cover that case.
 		if msg.Action != tea.MouseActionRelease {
 			return m, nil
 		}
-		// Outside the body region : ignore. The sidebar has its
-		// own click semantics ; right-clicking it would be
-		// surprising.
 		if msg.X < m.sidebarWidth() {
 			m.menu.open = false
 			return m, nil
 		}
-		// Move the table cursor to the clicked row first so the
-		// menu reflects the right selection — then build the menu.
-		row := msg.Y - 2
+		row := msg.Y - m.topbarHeight() - 2
 		if row < 0 {
 			return m, nil
 		}
@@ -1392,16 +2561,73 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.menu.cursor = 0
 		return m, nil
 	case tea.MouseButtonLeft:
+		// Log-pane tab click : switch the active tab when the
+		// operator clicks one of the bordered tab boxes at the top
+		// of the log pane. Y is in the strip's 3-line rect ; X is
+		// relative to the pane's left edge (which begins at
+		// sidebarWidth()).
+		if inTabStrip && msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
+			localX := msg.X - m.sidebarWidth() - 2 // -2 for LogPaneBox border+padding
+			if id := m.logPane.tabHitX(localX); id != "" {
+				m.logPane.switchTab(id)
+				// Switching to "events" lazily opens the
+				// platform-event stream — same trigger as the
+				// keypath but now from the log-pane tabbar
+				// (operator directive 2026-06-24 "passer la
+				// vue events dans la zone tabbar").
+				if id == "events" && m.eventsPump == nil && m.client != nil {
+					m.eventsPump = newEventStreamPump()
+					return m, startEventsStreamCmd(m.client, m.eventsPump)
+				}
+				return m, nil
+			}
+		}
+		// Context menu : Ctrl+Shift+Left-click on a body row opens
+		// the per-row action menu (was right-click pre-2026-06-23,
+		// switched to avoid conflicts with the terminal's own
+		// right-click handling). Trigger on release so a drag-
+		// click-release doesn't open the menu mid-selection.
+		if msg.Ctrl && msg.Shift && msg.Action == tea.MouseActionRelease {
+			if msg.X < m.sidebarWidth() {
+				m.menu.open = false
+				return m, nil
+			}
+			row := msg.Y - m.topbarHeight() - 2
+			if row < 0 {
+				return m, nil
+			}
+			m.setActiveTableCursor(row)
+			items := m.buildContextMenu()
+			if len(items) == 0 {
+				m.menu.open = false
+				return m, nil
+			}
+			m.menu.open = true
+			m.menu.items = items
+			m.menu.cursor = 0
+			return m, nil
+		}
 		// Sidebar drag-resize : a Press exactly on the sidebar's
 		// right-border column enters drag mode ; Motion updates the
 		// width live ; Release exits. Has to be checked BEFORE the
 		// "release ignored" guard so motion events get through.
+		//
+		// Log-pane drag-resize : a Press exactly on the top-border
+		// row of the log pane (terminal Y = topbarHeight +
+		// bodyHeight) enters vertical drag mode. The handle is
+		// visible as the LogPaneBox's top `─` line ; the operator
+		// pulls it up to grow the log pane / down to shrink.
 		sw := m.sidebarWidth()
 		boundaryX := sw - 1
+		logHandleY := m.topbarHeight() + m.bodyHeight() // first row of log pane
 		switch msg.Action {
 		case tea.MouseActionPress:
 			if msg.X == boundaryX {
 				m.dragSidebar = true
+				return m, nil
+			}
+			if msg.Y == logHandleY && msg.X >= m.sidebarWidth() {
+				m.dragLogPane = true
 				return m, nil
 			}
 		case tea.MouseActionMotion:
@@ -1418,7 +2644,29 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				m.sidebarW = newW
 				// Re-resize tables to the new body width.
-				h := m.bodyHeight() - 2
+				h := m.bodyHeight() - 1
+				bw := m.bodyInnerWidth()
+				applyResize(&m.hosts.table, hostsColumns(), bw, h)
+				applyResize(&m.vms.table, vmsColumns(), bw, h)
+				applyResize(&m.projects.table, projectsColumns(), bw, h)
+				for _, rm := range m.resource {
+					applyResize(&rm.table, rm.cfg.Columns, bw, h)
+				}
+				return m, nil
+			}
+			if m.dragLogPane {
+				// New log pane top row = msg.Y (where the handle
+				// has been pulled). New log pane total height =
+				// terminal-Y of statusbar - msg.Y - 2.
+				bottomY := m.height - 2 // status bar starts here (incl. its top border)
+				newPaneHeight := bottomY - msg.Y
+				// newPaneHeight is the TOTAL log pane lines ; the
+				// viewport content height = total - chrome (5).
+				newVPHeight := newPaneHeight - 5
+				m.logPaneH = newVPHeight
+				m.logPane.SetHeight(newVPHeight)
+				// Re-resize tables since bodyHeight changed.
+				h := m.bodyHeight() - 1
 				bw := m.bodyInnerWidth()
 				applyResize(&m.hosts.table, hostsColumns(), bw, h)
 				applyResize(&m.vms.table, vmsColumns(), bw, h)
@@ -1433,14 +2681,25 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.dragSidebar = false
 				return m, nil
 			}
+			if m.dragLogPane {
+				m.dragLogPane = false
+				return m, nil
+			}
 		}
 		// Single click = MouseActionPress ; we only act on the
 		// release so motion-while-pressed doesn't drag-select.
 		if msg.Action != tea.MouseActionRelease {
 			return m, nil
 		}
+		// Mouse Y → region-relative Y. The topbar lives above the
+		// sidebar + body row, so every comparison below must
+		// subtract its height. A regression here (forgetting the
+		// subtraction) makes the operator's click hit the row above
+		// the one they pointed at — the user-reported bug post-
+		// topbar-introduction. Pinned by sidebar-click test.
+		regionY := msg.Y - m.topbarHeight()
 		if msg.X < sw {
-			if e, ok := m.sidebarHitRows()[msg.Y]; ok {
+			if e, ok := m.sidebarHitRows()[regionY]; ok {
 				m.menu.open = false
 				if e.resourceID != "" {
 					cmd := m.switchToResource(e.resourceID)
@@ -1452,7 +2711,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		// Context menu open : map the click to a menu item.
 		if m.menu.open {
-			if y, ok := m.menuHitRow(msg.Y); ok {
+			if y, ok := m.menuHitRow(regionY); ok {
 				m.menu.cursor = y
 				return m.menuActivate()
 			}
@@ -1464,7 +2723,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// reserves 1 line for the header and 1 line at the top
 		// for the styled border ; the first data row sits at
 		// rendered row 2 (relative to the body region's top).
-		row := msg.Y - 2
+		row := regionY - 2
 		if row < 0 {
 			return m, nil
 		}
@@ -1487,6 +2746,16 @@ func (m Model) activateTab(t tab) (tea.Model, tea.Cmd) {
 		return m, loadVMsCmd(m.client)
 	case tabProjects:
 		return m, loadProjectsCmd(m.client)
+	case tabEvents:
+		// Lazily open the event stream the first time the tab is
+		// reached — mirror the keypath at handleKey "4". The
+		// sidebar click path used to skip this entirely
+		// (operator-reported 2026-06-24 "la vue events ne
+		// semble pas cablée").
+		if m.eventsPump == nil && m.client != nil {
+			m.eventsPump = newEventStreamPump()
+			return m, startEventsStreamCmd(m.client, m.eventsPump)
+		}
 	}
 	return m, nil
 }
@@ -1540,42 +2809,47 @@ func (m *Model) activeTable() *table.Model {
 	return nil
 }
 
-func (m Model) renderStatusBar() string {
-	var left string
-	if m.active == tabResource {
-		left = m.theme.StatusKey.Render(m.currentResource)
-	} else {
-		left = m.theme.StatusKey.Render(tabLabels[m.active])
-	}
-	mid := ""
-	var ts time.Time
+// activeRefreshTS returns the lastRefresh timestamp for whichever
+// view is currently active, or zero if the view has never loaded.
+// Used by the topbar to surface "refreshed HH:MM:SS" — moved out
+// of the status bar per 2026-06-23 directive.
+func (m Model) activeRefreshTS() time.Time {
 	switch m.active {
 	case tabHosts:
-		ts = m.hosts.lastRefresh
+		return m.hosts.lastRefresh
 	case tabVMs:
-		ts = m.vms.lastRefresh
+		return m.vms.lastRefresh
 	case tabProjects:
-		ts = m.projects.lastRefresh
+		return m.projects.lastRefresh
 	case tabResource:
 		if rm, ok := m.resource[m.currentResource]; ok {
-			ts = rm.refresh
+			return rm.refresh
 		}
 	}
-	if !ts.IsZero() {
-		mid = m.theme.StatusVal.Render(" refreshed " + ts.Format("15:04:05"))
+	return time.Time{}
+}
+
+func (m Model) renderStatusBar() string {
+	// The active-tab indicator AND the "refreshed HH:MM:SS" stamp
+	// both moved up to the topbar (2026-06-23 directive, reiterated
+	// today). The status bar now carries just the connection status
+	// + status message / help hint.
+	// Status bar : transient status messages only (success / error
+	// from a recent action). The conn ● indicator moved up to the
+	// topbar (operator directive 2026-06-23 "affiche le point avec
+	// pc en permanence avec une couleur ... dans la topbar"). The
+	// status bar's top border was also dropped — it was the "bout de
+	// ligne orphelin sous les frames" the operator flagged.
+	if m.statusMsg == "" {
+		// Render a single padded space line so the layout's height
+		// budget (- 1 row for status bar in bodyHeight()) stays
+		// constant whether or not there's a message.
+		return m.theme.StatusBar.Render("")
 	}
-	right := ""
-	if m.statusMsg != "" {
-		if m.statusErr {
-			right = m.theme.StatusErr.Render(m.statusMsg)
-		} else {
-			right = m.theme.StatusMsg.Render(m.statusMsg)
-		}
-	} else {
-		right = m.theme.Faint.Render("press ? for help")
+	if m.statusErr {
+		return m.theme.StatusBar.Render(m.theme.StatusErr.Render(m.statusMsg))
 	}
-	content := left + "  " + mid + "  " + right
-	return m.theme.StatusBar.Render(content)
+	return m.theme.StatusBar.Render(m.theme.StatusMsg.Render(m.statusMsg))
 }
 
 // setMsg / setError / clearStatus are the tiny helpers the rest of

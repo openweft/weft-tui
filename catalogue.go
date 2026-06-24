@@ -571,13 +571,18 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "azs", Title: "Availability Zones", Section: "Admin",
 		Columns: []table.Column{
-			{Title: "CODE", Width: 12}, {Title: "NAME", Width: 22}, {Title: "STATUS", Width: 12},
+			{Title: "CODE", Width: 8},
+			{Title: "NAME", Width: 18},
+			{Title: "STATUS", Width: 10},
+			{Title: "UUID", Width: 36},
 		},
-		List:       listAZs,
+		List: listAZs,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "code"), s(r, "name"), s(r, "status")}
+			return []string{s(r, "code"), s(r, "name"), s(r, "status"), s(r, "uuid")}
 		},
 		Actions: []ResourceAction{
+			{Key: "a", Label: "activate", Do: setAZStatus("active")},
+			{Key: "i", Label: "inactivate", Do: setAZStatus("inactive")},
 			{Key: "d", Label: "delete", Confirm: "yes", Do: deleteByUUID(func(ctx context.Context, c weftv1.WeftAgentClient, uuid string) error {
 				_, err := c.DeleteAZ(ctx, &weftv1.DeleteAZRequest{Uuid: uuid})
 				return err
@@ -619,13 +624,19 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "racks", Title: "Racks", Section: "Admin",
 		Columns: []table.Column{
-			{Title: "CODE", Width: 12}, {Title: "AZ", Width: 12}, {Title: "POSITION", Width: 10},
+			{Title: "CODE", Width: 10},
+			{Title: "AZ", Width: 8},
+			{Title: "STATUS", Width: 10},
+			{Title: "HOSTS", Width: 8},
+			{Title: "AZ_UUID", Width: 36},
 		},
-		List:       listRacks,
+		List: listRacks,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "code"), s(r, "az_uuid"), iStr(r["position"])}
+			return []string{s(r, "code"), s(r, "az_code"), s(r, "status"), iStr(r["position"]), s(r, "az_uuid")}
 		},
 		Actions: []ResourceAction{
+			{Key: "a", Label: "activate", Do: setRackStatus("active")},
+			{Key: "i", Label: "inactivate", Do: setRackStatus("inactive")},
 			{Key: "d", Label: "delete", Confirm: "yes", Do: deleteByUUID(func(ctx context.Context, c weftv1.WeftAgentClient, uuid string) error {
 				_, err := c.DeleteRack(ctx, &weftv1.DeleteRackRequest{Uuid: uuid})
 				return err
@@ -671,7 +682,7 @@ var resourceCatalogue = []ResourceConfig{
 		},
 	},
 	{
-		ID: "images", Title: "Images", Section: "Admin",
+		ID: "images", Title: "Images", Section: "Storage",
 		Columns: []table.Column{
 			{Title: "URL", Width: 50}, {Title: "FORMAT", Width: 10}, {Title: "SIZE", Width: 12},
 		},
@@ -793,6 +804,47 @@ func deleteByUUID(rpc func(ctx context.Context, c weftv1.WeftAgentClient, uuid s
 			return "", err
 		}
 		return "deleted " + uuid, nil
+	}
+}
+
+// setAZStatus + setRackStatus return ResourceAction.Do closures
+// that flip the inventory record's status field via UpdateAZ /
+// UpdateRack with all the other fields left as "" (= keep current).
+// Operator directive 2026-06-24 : "il faudrait ajouter la
+// possibilité de passer une AZ, un rack, un host en statut
+// inactif/actif". Host is already covered by `c`/`u`/`d` on the
+// hosts table — the cordon/uncordon/down handlers in hosts.go.
+func setAZStatus(status string) func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+	return func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+		uuid := s(row, "uuid")
+		if uuid == "" {
+			return "", fmt.Errorf("row has no uuid column")
+		}
+		_, err := c.UpdateAZ(ctx, &weftv1.UpdateAZRequest{
+			Uuid:   uuid,
+			Status: status,
+		})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("az %s → %s", s(row, "code"), status), nil
+	}
+}
+
+func setRackStatus(status string) func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+	return func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+		uuid := s(row, "uuid")
+		if uuid == "" {
+			return "", fmt.Errorf("row has no uuid column")
+		}
+		_, err := c.UpdateRack(ctx, &weftv1.UpdateRackRequest{
+			Uuid:   uuid,
+			Status: status,
+		})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("rack %s → %s", s(row, "code"), status), nil
 	}
 }
 

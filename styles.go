@@ -43,6 +43,20 @@ type Theme struct {
 	// border as SidebarBox so the two side-by-side panels read
 	// as a matched pair.
 	BodyBox lipgloss.Style
+	// LogPaneBox wraps the scrollable diagnostic pane below the body.
+	// Same rounded-border family as SidebarBox / BodyBox so the three
+	// panels read as a cohesive layout.
+	LogPaneBox lipgloss.Style
+	// TopbarBox wraps the topbar (product name + cluster left,
+	// identity right). Same rounded-border family as the other
+	// panels so the chrome stays cohesive.
+	TopbarBox lipgloss.Style
+	// LogTabActive / LogTabInactive style the individual log-pane
+	// tabs (Logs / Terminal / Bookmarks). Each tab gets its own
+	// rounded frame so the strip reads as a row of buttons rather
+	// than a single text line.
+	LogTabActive   lipgloss.Style
+	LogTabInactive lipgloss.Style
 }
 
 // NewTheme builds the default theme. Adaptive colours are passed as
@@ -76,9 +90,6 @@ func NewTheme() Theme {
 			Padding(0, 2),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(muted).
-			BorderTop(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(border).
 			Padding(0, 1),
 		StatusKey: lipgloss.NewStyle().Bold(true).Foreground(primary),
 		StatusVal: lipgloss.NewStyle().Foreground(muted),
@@ -100,12 +111,40 @@ func NewTheme() Theme {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(border).
 			Padding(1, 1),
-		SidebarItem:       lipgloss.NewStyle().Foreground(muted).PaddingLeft(2),
+		// 2026-06-23 : sidebar items + section headers aligned on the
+		// topbar identity style (theme.Faint = muted, no italic, no
+		// padding). Active row keeps its distinct bold+primary so
+		// selection stays unmistakable.
+		SidebarItem:       lipgloss.NewStyle().Foreground(muted),
 		SidebarItemActive: lipgloss.NewStyle().Bold(true).Foreground(primary),
-		SidebarSection:    lipgloss.NewStyle().Foreground(muted).Italic(true).PaddingTop(1),
+		SidebarSection:    lipgloss.NewStyle().Foreground(muted),
 		BodyBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(border).
+			Padding(0, 1),
+		LogPaneBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1),
+		TopbarBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1),
+		// Tab boxes : NO bottom border. The bottom is drawn by a
+		// custom rule line in renderTabStrip that connects the tab
+		// edges to the pane's content below — like browser tabs.
+		// Without this, lipgloss would draw a closing border under
+		// each tab + a separate rule below = a visible gap.
+		LogTabActive: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder(), true, true, false, true).
+			BorderForeground(primary).
+			Foreground(primary).
+			Bold(true).
+			Padding(0, 1),
+		LogTabInactive: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder(), true, true, false, true).
+			BorderForeground(border).
+			Foreground(muted).
 			Padding(0, 1),
 	}
 }
