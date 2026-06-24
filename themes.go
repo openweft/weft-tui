@@ -106,9 +106,6 @@ func NewThemeWith(p ThemePreset) Theme {
 			Padding(0, 2),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(p.Muted).
-			BorderTop(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(p.Border).
 			Padding(0, 1),
 		StatusKey: lipgloss.NewStyle().Bold(true).Foreground(p.Primary),
 		StatusVal: lipgloss.NewStyle().Foreground(p.Muted),
@@ -137,12 +134,31 @@ func NewThemeWith(p ThemePreset) Theme {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(p.Border).
 			Padding(1, 1),
-		SidebarItem:       lipgloss.NewStyle().Foreground(p.Muted).PaddingLeft(2),
+		SidebarItem:       lipgloss.NewStyle().Foreground(p.Muted),
 		SidebarItemActive: lipgloss.NewStyle().Bold(true).Foreground(p.Primary),
-		SidebarSection:    lipgloss.NewStyle().Foreground(p.Muted).Italic(true).PaddingTop(1),
+		SidebarSection:    lipgloss.NewStyle().Foreground(p.Muted),
 		BodyBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(p.Border).
+			Padding(0, 1),
+		LogPaneBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Border).
+			Padding(0, 1),
+		TopbarBox: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Border).
+			Padding(0, 1),
+		LogTabActive: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder(), true, true, false, true).
+			BorderForeground(p.Primary).
+			Foreground(p.Primary).
+			Bold(true).
+			Padding(0, 1),
+		LogTabInactive: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder(), true, true, false, true).
+			BorderForeground(p.Border).
+			Foreground(p.Muted).
 			Padding(0, 1),
 	}
 }

@@ -286,10 +286,26 @@ func listRacks(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any,
 	if err != nil {
 		return nil, err
 	}
+	// Side-load the AZ catalogue to resolve uuid → code so the rack
+	// table shows the human-friendly AZ name alongside the UUID
+	// (operator directive 2026-06-24 : "j'aimerais avoir les deux,
+	// l'uuid est déterministe mais le nom est plus humain").
+	// Best-effort : on ListAZs error we just leave az_code empty,
+	// the column falls through to the raw uuid.
+	azByUUID := map[string]string{}
+	if azResp, azErr := c.ListAZs(ctx, &weftv1.ListAZsRequest{}); azErr == nil {
+		for _, a := range azResp.Azs {
+			azByUUID[a.Uuid] = a.Code
+		}
+	}
 	out := make([]map[string]any, 0, len(resp.Racks))
 	for _, r := range resp.Racks {
 		out = append(out, map[string]any{
-			"uuid": r.Uuid, "code": r.Code, "az_uuid": r.AzUuid,
+			"uuid":     r.Uuid,
+			"code":     r.Code,
+			"status":   r.Status,
+			"az_code":  azByUUID[r.AzUuid],
+			"az_uuid":  r.AzUuid,
 			"position": r.Hosts, // re-uses the position column slot to show host count
 		})
 	}

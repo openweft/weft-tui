@@ -57,6 +57,11 @@ type fakeClient struct {
 	deleteProjReq  *weftv1.DeleteProjectRequest
 	deleteProjErr  error
 
+	// Tenants : used by the VMs tab to prefix the PROJECT column
+	// with the owning tenant's display name.
+	listTenantsResp *weftv1.ListTenantsResponse
+	listTenantsErr  error
+
 	// Events.
 	watchErr error
 }
@@ -115,6 +120,10 @@ func (f *fakeClient) RestartVM(_ context.Context, in *weftv1.RestartVMRequest, _
 	return &weftv1.RestartVMResponse{}, f.restartErr
 }
 
+func (f *fakeClient) SetVMStatus(_ context.Context, _ *weftv1.SetVMStatusRequest, _ ...grpc.CallOption) (*weftv1.SetVMStatusResponse, error) {
+	return &weftv1.SetVMStatusResponse{}, nil
+}
+
 func (f *fakeClient) VMLogs(_ context.Context, in *weftv1.VMLogsRequest, _ ...grpc.CallOption) (*weftv1.VMLogsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -129,6 +138,15 @@ func (f *fakeClient) ListProjects(_ context.Context, _ *weftv1.ListProjectsReque
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.listProjResp, f.listProjErr
+}
+
+// ListTenants stub : returns whatever the test seeded. The tab uses
+// it to build the tenant-UUID → tenant-name map that prefixes the
+// VMs PROJECT column.
+func (f *fakeClient) ListTenants(_ context.Context, _ *weftv1.ListTenantsRequest, _ ...grpc.CallOption) (*weftv1.ListTenantsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listTenantsResp, f.listTenantsErr
 }
 
 func (f *fakeClient) CreateProject(_ context.Context, in *weftv1.CreateProjectRequest, _ ...grpc.CallOption) (*weftv1.CreateProjectResponse, error) {
@@ -407,7 +425,7 @@ func vmsModelWithSeed(t *testing.T, c *fakeClient, vm *weftv1.VMInfo) Model {
 	m := New(c)
 	next, _ := m.Update(keyMsg('2'))
 	m = next.(Model)
-	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
 	return m
 }
 
@@ -515,7 +533,7 @@ func TestVMsHostColumnResolvesHostname(t *testing.T) {
 	m = next.(Model)
 
 	// VMs land first ; HOST column should fall back to short UUID.
-	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
 	if got := m.vms.rows[0].HostName; got != "" {
 		t.Errorf("HostName before hosts arrive = %q, want empty", got)
 	}
@@ -569,7 +587,7 @@ func projectsModelWithSeed(t *testing.T, c *fakeClient, p *weftv1.ProjectInfo) M
 	m := New(c)
 	next, _ := m.Update(keyMsg('3'))
 	m = next.(Model)
-	m.projects.applyProjects(c.listProjResp, map[string]int{p.Uuid: 0})
+	m.projects.applyProjects(c.listProjResp, map[string]int{p.Uuid: 0}, nil)
 	return m
 }
 
@@ -1089,24 +1107,23 @@ func TestAutoFetchClusterName_NilClient(t *testing.T) {
 	}
 }
 
-// TestClusterName_AppearsInTitle pins the v0.3.6 federation cue :
-// when m.clusterName is set, the sidebar header includes it.
-// (Title moved from the horizontal tab strip to the sidebar's top
-// section in v0.5.0 when the layout switched to a left-hand object-
-// type list.)
+// TestClusterName_AppearsInTitle pins the v0.3.6 federation cue +
+// the 2026-06-23 layout shift : the cluster name lives in the
+// topbar (above the sidebar+body row), not in the sidebar itself.
+// "weft  <cluster>" left side ; "<user>@<host>" right side.
 func TestClusterName_AppearsInTitle(t *testing.T) {
 	m := New(&fakeClient{})
 	m.clusterName = "prod-eu"
 	m.width = 100
 	m.height = 30
-	side := m.renderSidebar()
-	if !strings.Contains(side, "prod-eu") {
-		t.Errorf("sidebar missing cluster name : %q", side)
+	top := m.renderTopbar()
+	if !strings.Contains(top, "prod-eu") {
+		t.Errorf("topbar missing cluster name : %q", top)
 	}
 	m.clusterName = ""
-	side = m.renderSidebar()
-	if strings.Contains(side, "prod-eu") {
-		t.Errorf("sidebar should not show cluster name when unset : %q", side)
+	top = m.renderTopbar()
+	if strings.Contains(top, "prod-eu") {
+		t.Errorf("topbar should not show cluster name when unset : %q", top)
 	}
 }
 

@@ -23,20 +23,33 @@ type VMsClient interface {
 	StopVM(ctx context.Context, in *weftv1.StopVMRequest, opts ...grpc.CallOption) (*weftv1.StopVMResponse, error)
 	RestartVM(ctx context.Context, in *weftv1.RestartVMRequest, opts ...grpc.CallOption) (*weftv1.RestartVMResponse, error)
 	VMLogs(ctx context.Context, in *weftv1.VMLogsRequest, opts ...grpc.CallOption) (*weftv1.VMLogsResponse, error)
+	SetVMStatus(ctx context.Context, in *weftv1.SetVMStatusRequest, opts ...grpc.CallOption) (*weftv1.SetVMStatusResponse, error)
 }
 
 // vmRow is the in-memory copy of one VM the table renders. We mirror
 // just the columns we display — keeps the render path decoupled from
 // the wire proto and lets us add badges per state without re-marshalling.
 type vmRow struct {
-	Name     string
-	Project  string
-	UUID     string
+	Name string
+	// Project is the display name from the wire (VMInfo.project) ;
+	// Tenant is resolved client-side via the project_uuid →
+	// tenant lookup. The PROJECT column renders as
+	// "<tenant>:<project>" so two tenants owning a project called
+	// "default" stay distinguishable. Empty Tenant → just the
+	// project name (matches the legacy untenanted layout).
+	Project     string
+	ProjectUUID string // VMInfo.project_uuid ; needed for the tenant lookup on refreshProjectColumn
+	Tenant      string
+	UUID        string
 	HostUUID string // raw VMInfo.host_uuid from the wire
 	HostName string // resolved via the hosts cache ; "" when unknown
 	AZ       string // resolved via the hosts cache (Host.AZ)
 	Rack     string // resolved via the hosts cache (Host.Rack)
 	State    string
+	// Status is the operator's administrative intent
+	// ("active"/"inactive"/"draining"), orthogonal to the runtime
+	// State. 2026-06-24 VM status MVP.
+	Status   string
 	Image    string
 	CPU      uint32
 	MemMB    uint64
@@ -96,6 +109,7 @@ func vmsColumns() []table.Column {
 		{Title: "RACK", Width: 5},
 		{Title: "HOST", Width: 10},
 		{Title: "STATE", Width: 10},
+		{Title: "STATUS", Width: 10},
 		{Title: "IMAGE", Width: 22},
 		{Title: "CPU", Width: 4},
 		{Title: "MEM-MB", Width: 8},
@@ -110,11 +124,14 @@ func newVMsModel(theme Theme) vmsModel {
 		table.WithHeight(15),
 	)
 	s := table.DefaultStyles()
+	// Padding(0, 0) : see hosts.go newHostsModel for the rationale.
 	s.Header = s.Header.
+		Padding(0, 0).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
+	s.Cell = s.Cell.Padding(0, 0)
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	vp := viewport.New(80, 15)
@@ -130,6 +147,20 @@ func (m *vmsModel) selected() (name, project string) {
 		return "", ""
 	}
 	return m.rows[idx].Name, m.rows[idx].Project
+}
+
+// selectedUUID returns the UUID of the currently-selected VM, or
+// "" when nothing's selected. UUID is the stable handle the
+// SetVMStatus RPC uses (survives renames).
+func (m *vmsModel) selectedUUID() string {
+	if len(m.rows) == 0 {
+		return ""
+	}
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.rows) {
+		return ""
+	}
+	return m.rows[idx].UUID
 }
 
 // refreshHostNames re-runs hostLookup over the current rows and
@@ -160,11 +191,49 @@ func (m *vmsModel) refreshHostNames(hostLookup func(uuid string) (name, az, rack
 	}
 }
 
+// refreshProjectColumn re-runs tenantLookup over the current rows
+// and re-renders the table. Same shape as refreshHostNames : called
+// when a projectsLoadedMsg lands AFTER the VMs tab has already
+// rendered, so the "<tenant>:<project>" prefix appears on the
+// existing rows without waiting for the next ListVMs refresh.
+func (m *vmsModel) refreshProjectColumn(tenantLookup func(projectUUID string) string) {
+	if tenantLookup == nil || len(m.rows) == 0 {
+		return
+	}
+	tableRows := make([]table.Row, 0, len(m.rows))
+	changed := false
+	for i := range m.rows {
+		// We don't have the project UUID on vmRow today — the
+		// row was hydrated from VMInfo.project_uuid via applyVMs.
+		// Look up by VMInfo.project_uuid… but vmRow only stores
+		// the display name. Re-derive : the tenantLookup signature
+		// takes a project UUID. We keep a parallel slice when
+		// building rows ; simpler path is to add ProjectUUID to
+		// the row (already happens implicitly through applyVMs).
+		if m.rows[i].ProjectUUID == "" {
+			continue
+		}
+		tenant := tenantLookup(m.rows[i].ProjectUUID)
+		if tenant != m.rows[i].Tenant {
+			m.rows[i].Tenant = tenant
+			changed = true
+		}
+		tableRows = append(tableRows, m.rows[i].tableRow(m.theme))
+	}
+	if changed {
+		m.table.SetRows(tableRows)
+	}
+}
+
 // applyVMs refreshes the table + in-memory rows from a ListVMs
 // response. The hostLookup callback resolves VMInfo.host_uuid into
 // (hostname, az, rack) tuples for the HOST / AZ / RACK columns ;
-// nil → blanks (the columns then render "—").
-func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) (name, az, rack string)) {
+// nil → blanks (the columns then render "—"). tenantLookup resolves
+// VMInfo.project_uuid into the project's tenant name, so the PROJECT
+// column renders as "tenant:project" — the project display name
+// alone isn't deterministic across tenants (two tenants can each own
+// a project called "default").
+func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) (name, az, rack string), tenantLookup func(projectUUID string) string) {
 	rows := make([]vmRow, 0, len(resp.Vms))
 	tableRows := make([]table.Row, 0, len(resp.Vms))
 	for _, v := range resp.Vms {
@@ -173,19 +242,26 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 		if hostLookup != nil && v.HostUuid != "" {
 			hostName, az, rack = hostLookup(v.HostUuid)
 		}
+		var tenant string
+		if tenantLookup != nil && v.ProjectUuid != "" {
+			tenant = tenantLookup(v.ProjectUuid)
+		}
 		row := vmRow{
-			Name:     v.Name,
-			Project:  v.Project,
-			UUID:     v.Uuid,
-			HostUUID: v.HostUuid,
-			HostName: hostName,
-			AZ:       az,
-			Rack:     rack,
-			State:    state,
-			Image:    v.Image,
-			CPU:      v.Cpu,
-			MemMB:    v.MemMb,
-			IP:       v.Ip,
+			Name:        v.Name,
+			Project:     v.Project,
+			ProjectUUID: v.ProjectUuid,
+			Tenant:      tenant,
+			UUID:        v.Uuid,
+			HostUUID:    v.HostUuid,
+			HostName:    hostName,
+			AZ:          az,
+			Rack:        rack,
+			State:       state,
+			Status:      vmStatusString(v.Status),
+			Image:       v.Image,
+			CPU:         v.Cpu,
+			MemMB:       v.MemMb,
+			IP:          v.Ip,
 		}
 		rows = append(rows, row)
 		tableRows = append(tableRows, row.tableRow(m.theme))
@@ -227,14 +303,42 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 	}
 	return table.Row{
 		dashEmpty(r.Name),
-		dashEmpty(r.Project),
+		dashEmpty(formatTenantProject(r.Tenant, r.Project)),
 		azBadge(theme, r.AZ),
 		dashEmpty(r.Rack),
 		host,
 		state,
+		dashEmpty(r.Status),
 		dashEmpty(shortImage(r.Image)),
 		fmt.Sprintf("%d", r.CPU),
 		fmt.Sprintf("%d", r.MemMB),
+	}
+}
+
+// vmStatusString normalises the wire's VMInfo.status field for
+// display. Empty string is treated as "active" (the server default
+// for VMs registered before the field landed, 2026-06-24).
+func vmStatusString(s string) string {
+	if s == "" {
+		return "active"
+	}
+	return s
+}
+
+// formatTenantProject joins a tenant + project pair into the
+// display string the PROJECT column renders. Empty tenant → bare
+// project (preserves the historical untenanted look) ; empty
+// project → tenant alone ; both empty → "".
+func formatTenantProject(tenant, project string) string {
+	switch {
+	case tenant == "" && project == "":
+		return ""
+	case tenant == "":
+		return project
+	case project == "":
+		return tenant
+	default:
+		return tenant + ":" + project
 	}
 }
 
@@ -367,6 +471,22 @@ func startVMCmd(client VMsClient, name, project string) tea.Cmd {
 		defer cancel()
 		_, err := client.StartVM(ctx, &weftv1.StartVMRequest{Name: name, Project: project})
 		return vmActionMsg{action: "start", name: name, project: project, err: err}
+	}
+}
+
+// setVMStatusCmd flips the operator's administrative intent on a
+// VM (active / inactive / draining) — orthogonal to its runtime
+// State. Targets by UUID so a rename doesn't break the action.
+// 2026-06-24 VM status MVP.
+func setVMStatusCmd(client VMsClient, uuid, name, project, statusVal string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return vmActionMsg{action: "status:" + statusVal, name: name, project: project, err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := client.SetVMStatus(ctx, &weftv1.SetVMStatusRequest{Uuid: uuid, Status: statusVal})
+		return vmActionMsg{action: "status:" + statusVal, name: name, project: project, err: err}
 	}
 }
 
