@@ -2163,6 +2163,19 @@ func (m Model) renderBody() string {
 	const bodyContentPadding = 2
 	pad := strings.Repeat(" ", bodyContentPadding)
 	fullRule := m.theme.Faint.Render(strings.Repeat("─", inner))
+	// Selection-row prefix detection : the bubbles/table applies
+	// theme.SelectedRow to the entire row line, so its rendered
+	// output starts with the style's opening ANSI escape. We render
+	// a sentinel ("\x00") through the same style, then split off
+	// everything before the sentinel = the opening prefix. Any line
+	// that begins with this prefix is the selected row ; we extend
+	// its background across the left+right body padding so the
+	// highlight reaches the body frame. Operator directive
+	// 2026-06-25 "la coloration de la ligne de selection aille
+	// jusquau bord du frame".
+	selRendered := m.theme.SelectedRow.Render("\x00")
+	selPrefix, _, _ := strings.Cut(selRendered, "\x00")
+	selPad := m.theme.SelectedRow.Render(pad)
 	var rebuilt strings.Builder
 	for i, line := range strings.Split(content, "\n") {
 		if i > 0 {
@@ -2170,6 +2183,12 @@ func (m Model) renderBody() string {
 		}
 		if i == 1 {
 			rebuilt.WriteString(fullRule)
+			continue
+		}
+		if selPrefix != "" && strings.HasPrefix(line, selPrefix) {
+			rebuilt.WriteString(selPad)
+			rebuilt.WriteString(line)
+			rebuilt.WriteString(selPad)
 			continue
 		}
 		rebuilt.WriteString(pad)
