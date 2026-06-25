@@ -2175,7 +2175,7 @@ func (m Model) renderBody() string {
 	// jusquau bord du frame".
 	selRendered := m.theme.SelectedRow.Render("\x00")
 	selPrefix, _, _ := strings.Cut(selRendered, "\x00")
-	selPad := m.theme.SelectedRow.Render(pad)
+	selPadLeft := m.theme.SelectedRow.Render(pad)
 	var rebuilt strings.Builder
 	for i, line := range strings.Split(content, "\n") {
 		if i > 0 {
@@ -2186,9 +2186,21 @@ func (m Model) renderBody() string {
 			continue
 		}
 		if selPrefix != "" && strings.HasPrefix(line, selPrefix) {
-			rebuilt.WriteString(selPad)
+			// The bubbles/table row is only sum(col widths) chars
+			// wide ; rescaleColumns reserves tableSidePadding=4
+			// for the table widget's own chrome, so the row is
+			// 4 chars short of the body's table area. Measure the
+			// rendered line and fill the trailing gap with the
+			// selection background so the highlight spans
+			// edge-to-edge.
+			lineW := lipgloss.Width(line)
+			rightFill := inner - bodyContentPadding - lineW
+			if rightFill < 0 {
+				rightFill = 0
+			}
+			rebuilt.WriteString(selPadLeft)
 			rebuilt.WriteString(line)
-			rebuilt.WriteString(selPad)
+			rebuilt.WriteString(m.theme.SelectedRow.Render(strings.Repeat(" ", rightFill)))
 			continue
 		}
 		rebuilt.WriteString(pad)
