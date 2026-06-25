@@ -1368,12 +1368,16 @@ func (m Model) View() string {
 	// single row at Y = bodyHeight() — the log pane's top border.
 	bodyMidX := m.sidebarWidth() + m.bodyWidth()/2
 	main = injectHorizontalDragGripAtY(main, m.bodyHeight(), bodyMidX)
-	parts := []string{topbar, main}
-	if m.palette.open {
-		parts = append(parts, m.palette.View(m.theme, m.width))
-	}
-	parts = append(parts, m.renderStatusBar())
+	parts := []string{topbar, main, m.renderStatusBar()}
 	base := strings.Join(parts, "\n")
+	// Palette renders as an OVERLAY on top of the body region —
+	// previously it was appended linearly, which pushed everything
+	// down and clipped the bottom of the table + the status bar
+	// (audit 2026-06-25). Anchor at row topbarHeight + 1 (just
+	// inside the body's top border).
+	if m.palette.open {
+		base = m.overlayPalette(base)
+	}
 	// Context menu : overlay near the selected row instead of
 	// replacing the status bar. The previous "bottom strip"
 	// rendering was a layout shortcut ; the operator's directive
@@ -1462,33 +1466,80 @@ func (m Model) renderTopbar() string {
 	if rightPlain != "" {
 		rightCombinedPlain += rightPlain
 	}
-	// Truncate left first if it would push right off the edge.
-	maxLeft := contentWidth - len(rightCombinedPlain) - 1
-	if maxLeft < len("weft") {
-		maxLeft = len("weft")
-	}
-	if len(leftPlain) > maxLeft {
-		if maxLeft > 1 {
-			leftPlain = leftPlain[:maxLeft-1] + "…"
-		} else {
-			leftPlain = leftPlain[:maxLeft]
+	// Visible-width helpers via lipgloss so multi-byte UTF-8 (the
+	// `●` glyph + accented cluster names) doesn't make `len()`
+	// over-report — byte slicing those would emit invalid UTF-8.
+	// Audit 2026-06-25 : "Topbar uses byte len() + byte slicing for
+	// UTF-8 strings".
+	wWidth := lipgloss.Width
+	truncRight := func(s string, max int) string {
+		if wWidth(s) <= max {
+			return s
 		}
+		if max <= 1 {
+			return string([]rune(s)[:max])
+		}
+		runes := []rune(s)
+		// Walk from the left, accumulate cols until adding the
+		// next rune would push us past max-1 (reserve 1 col for …).
+		var b strings.Builder
+		w := 0
+		for _, r := range runes {
+			rw := wWidth(string(r))
+			if w+rw > max-1 {
+				break
+			}
+			b.WriteRune(r)
+			w += rw
+		}
+		b.WriteRune('…')
+		return b.String()
+	}
+	truncLeft := func(s string, max int) string {
+		if wWidth(s) <= max {
+			return s
+		}
+		if max <= 1 {
+			runes := []rune(s)
+			return string(runes[len(runes)-max:])
+		}
+		runes := []rune(s)
+		// Walk from the right ; accumulate the SUFFIX that fits in
+		// max-1 cols, prepend …
+		var collected []rune
+		w := 0
+		for i := len(runes) - 1; i >= 0; i-- {
+			rw := wWidth(string(runes[i]))
+			if w+rw > max-1 {
+				break
+			}
+			collected = append([]rune{runes[i]}, collected...)
+			w += rw
+		}
+		return "…" + string(collected)
+	}
+
+	// Truncate left first if it would push right off the edge.
+	maxLeft := contentWidth - wWidth(rightCombinedPlain) - 1
+	if maxLeft < wWidth("weft") {
+		maxLeft = wWidth("weft")
+	}
+	if wWidth(leftPlain) > maxLeft {
+		leftPlain = truncRight(leftPlain, maxLeft)
 	}
 	// Truncate the combined right side if it still doesn't fit. We
 	// drop the refresh portion FIRST (less critical than identity).
-	rightBudget := contentWidth - len(leftPlain) - 1
+	rightBudget := contentWidth - wWidth(leftPlain) - 1
 	if rightBudget < 0 {
 		rightBudget = 0
 	}
-	if len(rightCombinedPlain) > rightBudget {
+	if wWidth(rightCombinedPlain) > rightBudget {
 		// Try without refreshed first.
-		if refreshedPlain != "" && len(rightPlain) <= rightBudget {
+		if refreshedPlain != "" && wWidth(rightPlain) <= rightBudget {
 			refreshedPlain = ""
 			rightCombinedPlain = rightPlain
-		} else if rightBudget > 1 {
-			rightCombinedPlain = "…" + rightCombinedPlain[len(rightCombinedPlain)-(rightBudget-1):]
 		} else {
-			rightCombinedPlain = rightCombinedPlain[:rightBudget]
+			rightCombinedPlain = truncLeft(rightCombinedPlain, rightBudget)
 		}
 	}
 
@@ -2181,6 +2232,31 @@ func (m Model) bodyWidth() int {
 // into the base lines at (anchorX, anchorY) by character position
 // — keeping the ANSI styles intact via stripANSI math for the
 // length count, then write the menu bytes verbatim.
+// overlayPalette draws the command palette over the body region
+// at row topbarHeight + 1 (just inside the body's top border).
+// Anchored as an overlay rather than appended linearly so the
+// table + status bar stay put underneath. Audit 2026-06-25.
+func (m Model) overlayPalette(base string) string {
+	if !m.palette.open {
+		return base
+	}
+	rendered := m.palette.View(m.theme, m.width)
+	if rendered == "" {
+		return base
+	}
+	baseLines := strings.Split(base, "\n")
+	palLines := strings.Split(rendered, "\n")
+	anchorY := m.topbarHeight() + 1
+	for i, line := range palLines {
+		y := anchorY + i
+		if y < 0 || y >= len(baseLines) {
+			continue
+		}
+		baseLines[y] = overlayLineAt(baseLines[y], line, 0, m.width)
+	}
+	return strings.Join(baseLines, "\n")
+}
+
 func (m Model) overlayContextMenu(base string) string {
 	if !m.menu.open || len(m.menu.items) == 0 {
 		return base
@@ -2360,27 +2436,6 @@ func overlayLineAt(base, overlay string, anchorX, width int) string {
 	return out
 }
 
-// renderContextMenu draws the menu strip that replaces the status
-// bar when m.menu.open. One line per item, prefixed with "▸ " on
-// the selected row + the shortcut key in brackets. Footer reminds
-// the operator of the keyboard navigation contract.
-func (m Model) renderContextMenu() string {
-	if !m.menu.open || len(m.menu.items) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for i, it := range m.menu.items {
-		if i == m.menu.cursor {
-			b.WriteString(m.theme.SidebarItemActive.Render("▸ " + it.label + "  [" + it.shortcut + "]"))
-		} else {
-			b.WriteString(m.theme.SidebarItem.Render(it.label + "  [" + it.shortcut + "]"))
-		}
-		b.WriteString("\n")
-	}
-	b.WriteString(m.theme.Faint.Render("↑↓ select · ↵ run · click · Esc close"))
-	return m.theme.HelpBox.Width(m.bodyWidth() - 4).Render(b.String())
-}
-
 // menuHitRow translates a click Y coordinate to a menu item index
 // when the click lands inside the rendered menu's vertical extent.
 // Returns (idx, false) when y is outside the menu, so the caller
@@ -2394,20 +2449,33 @@ func (m Model) menuHitRow(y int) (int, bool) {
 	if !m.menu.open {
 		return 0, false
 	}
-	// Menu spans the bottom of the screen. The HelpBox style adds
-	// 1 border + 1 padding row top & bottom. So content rows live
-	// in [m.height - bottomChrome - len(items) - 1, m.height - bottomChrome - 2).
-	// Simpler : render the menu, count its lines, and map by index.
-	rendered := m.renderContextMenu()
-	lines := strings.Split(rendered, "\n")
-	menuTop := m.height - len(lines)
-	rel := y - menuTop
-	if rel < 0 || rel >= len(lines) {
-		return 0, false
+	// Menu floats next to the selected table row — same geometry
+	// overlayContextMenu uses. Audit 2026-06-25 : was hit-testing
+	// against the legacy bottom-strip layout that doesn't exist
+	// anymore, so menu items were unclickable.
+	tbl := m.activeTable()
+	rowIdx := 0
+	if tbl != nil {
+		rowIdx = tbl.Cursor()
 	}
-	// Within the menu : the first 2 lines are border+padding, then
-	// one line per item, then footer, then border+padding.
-	itemY := rel - 2
+	// anchorY = row immediately below the highlighted table row.
+	// y is regionY (= absolute Y - topbarHeight). The menu has
+	// 1 top border + N items + 1 bottom border = N+2 lines.
+	anchorY := bodyDataRowOffset + rowIdx + 1
+	// Flip-up case : if the menu would overflow the body, the
+	// overlayContextMenu code shifts it up. Mirror that bound :
+	menuHeight := len(m.menu.items) + 2
+	bodyBottom := m.bodyHeight()
+	if anchorY+menuHeight > bodyBottom {
+		anchorY = bodyDataRowOffset + rowIdx - menuHeight
+		if anchorY < 1 {
+			anchorY = 1
+		}
+	}
+	rel := y - anchorY
+	// rel 0 = top border ; items start at rel 1 ; bottom border
+	// at rel N+1. Item index = rel - 1.
+	itemY := rel - 1
 	if itemY < 0 || itemY >= len(m.menu.items) {
 		return 0, false
 	}
