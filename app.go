@@ -475,7 +475,7 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 		// layout. The size handler above also iterates the map on
 		// every resize so subsequent terminal changes propagate.
 		if m.width > 0 {
-			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-bodyDataRowOffset)
+			applyResize(&rm.table, cfg.Columns, m.bodyTableWidth(), m.bodyHeight()-bodyDataRowOffset)
 		}
 		m.resource[id] = rm
 	}
@@ -518,7 +518,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// exclude it. Match bodyHeight()/bodyWidth() so applyResize
 		// + renderBody agree on the viewport.
 		h := m.bodyHeight() - bodyDataRowOffset // body top border + action bar + sep + table header + header border
-		bw := m.bodyInnerWidth()
+		bw := m.bodyTableWidth()
 		// Table widgets : resize BOTH height (to fill the viewport)
 		// AND column widths (proportionally to the declared widths
 		// in their original definitions — captured by the per-tab
@@ -1005,7 +1005,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sidebarOffset = 0
 		// Re-resize tables since bodyInnerWidth changed.
 		h := m.bodyHeight() - bodyDataRowOffset
-		bw := m.bodyInnerWidth()
+		bw := m.bodyTableWidth()
 		applyResize(&m.hosts.table, hostsColumns(), bw, h)
 		applyResize(&m.vms.table, vmsColumns(), bw, h)
 		applyResize(&m.projects.table, projectsColumns(), bw, h)
@@ -2154,14 +2154,35 @@ func (m Model) renderBody() string {
 			content = rm.View(inner)
 		}
 	}
+	// Per-content padding (2026-06-25) : indent each line of the
+	// table view by 2 cols. Line 1 (the table widget's header-
+	// bottom-border) is replaced by a full-width rule so it
+	// visually matches the action-bar separator above — operator
+	// directive 2026-06-25 "alonger la ligne qui demarrque le
+	// dessous du header du tableau".
+	const bodyContentPadding = 2
+	pad := strings.Repeat(" ", bodyContentPadding)
+	fullRule := m.theme.Faint.Render(strings.Repeat("─", inner))
+	var rebuilt strings.Builder
+	for i, line := range strings.Split(content, "\n") {
+		if i > 0 {
+			rebuilt.WriteString("\n")
+		}
+		if i == 1 {
+			rebuilt.WriteString(fullRule)
+			continue
+		}
+		rebuilt.WriteString(pad)
+		rebuilt.WriteString(line)
+	}
+	content = rebuilt.String()
 	// Action toolbar at the top of the body : faint key-hint
 	// strip listing the action keys available on the current view.
-	// Followed by a faint horizontal rule separating it from the
-	// table's header — operator directive 2026-06-24 "met un
-	// frame pour separrer la barre d'action du tableau".
-	if bar := m.renderActionBar(inner); bar != "" {
-		sep := m.theme.Faint.Render(strings.Repeat("─", inner))
-		content = bar + "\n" + sep + "\n" + content
+	// Followed by a full-width rule separating it from the
+	// table's header — same edge-to-edge anchor as the header
+	// underline below.
+	if bar := m.renderActionBar(inner - bodyContentPadding*2); bar != "" {
+		content = pad + bar + "\n" + fullRule + "\n" + content
 	}
 	// MaxHeight defensive cap : the table widget normally honours its
 	// applyResize'd height, but the create-form / detail-drawer
@@ -2175,10 +2196,13 @@ func (m Model) renderBody() string {
 	// 1 row + 1 column of usable space. Height = bodyHeight - 1 (only
 	// top border kept) ; Width = bodyWidth - 1 (only right border
 	// kept) — totals stay (bodyWidth × bodyHeight).
-	// Drop horizontal padding so the action bar (and its separator
-	// rule line) reaches the body's right border edge-to-edge.
-	// Operator directive 2026-06-24 "joint le frame de la tab bar
-	// a droite et a gauche. idem pour l'icon/button barre".
+	// BodyBox padding stays 0 so the action bar's separator rule
+	// (and any future edge-to-edge ornament) reaches the body's
+	// frame edges. Content padding is applied INSIDE — action bar
+	// text + table view each indented by 2 cols ; the separator
+	// alone spans the full inner width. Operator directive
+	// 2026-06-25 : "il faut du padding sur les contenu mais pas
+	// sur les frame ou les lignes".
 	return m.theme.BodyBox.
 		BorderBottom(false).
 		BorderLeft(false).
@@ -2192,10 +2216,25 @@ func (m Model) renderBody() string {
 
 // bodyInnerWidth is what the body content actually has to draw on,
 // once the BodyBox border (1 col — only right is kept) is
-// subtracted from bodyWidth. Horizontal padding was dropped so the
-// action bar reaches edge-to-edge (operator 2026-06-24).
+// subtracted from bodyWidth. BodyBox padding is 0 ; the separator
+// rule and overlays consume this full width edge-to-edge, while
+// the table view + action bar receive their own 2-col content
+// padding rendered inline (see renderBody).
 func (m Model) bodyInnerWidth() int {
 	w := m.bodyWidth() - 1
+	if w < 16 {
+		w = 16
+	}
+	return w
+}
+
+// bodyTableWidth is what the table widget should render to —
+// bodyInnerWidth minus the 2-col content padding on each side.
+// applyResize call sites use this. 2026-06-25 split from
+// bodyInnerWidth so the separator can stay edge-to-edge while the
+// table itself indents.
+func (m Model) bodyTableWidth() int {
+	w := m.bodyInnerWidth() - 4
 	if w < 16 {
 		w = 16
 	}
@@ -2864,19 +2903,58 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// for now ; bespoke views land in a follow-up). Header Y
 		// inside body = top border (1) + action bar (1) + sep (1)
 		// = row 3 inside body. Absolute Y = topbar + 3.
-		if m.active == tabResource && msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
+		if msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
 			headerY := m.topbarHeight() + 3
 			if msg.Y == headerY {
-				if rm, ok := m.resource[m.currentResource]; ok {
-					if col := rm.columnAtX(msg.X - m.sidebarWidth()); col >= 0 {
-						if col == rm.sortCol {
-							rm.toggleSortDir()
-						} else {
-							rm.sortCol = col
-							rm.sortAsc = true
-							rm.applyRowsToTable()
+				// Subtract the 2-col content padding so columnAtX
+				// reads from the table's own coordinate system.
+				localX := msg.X - m.sidebarWidth() - 2
+				switch m.active {
+				case tabResource:
+					if rm, ok := m.resource[m.currentResource]; ok {
+						if col := rm.columnAtX(localX); col >= 0 {
+							if col == rm.sortCol {
+								rm.toggleSortDir()
+							} else {
+								rm.sortCol = col
+								rm.sortAsc = true
+								rm.applyRowsToTable()
+							}
+							m.resource[m.currentResource] = rm
+							return m, nil
 						}
-						m.resource[m.currentResource] = rm
+					}
+				case tabHosts:
+					if col := m.hosts.columnAtX(localX); col >= 0 {
+						if col == m.hosts.sortCol {
+							m.hosts.sortAsc = !m.hosts.sortAsc
+						} else {
+							m.hosts.sortCol = col
+							m.hosts.sortAsc = true
+						}
+						m.hosts.applySort()
+						return m, nil
+					}
+				case tabVMs:
+					if col := m.vms.columnAtX(localX); col >= 0 {
+						if col == m.vms.sortCol {
+							m.vms.sortAsc = !m.vms.sortAsc
+						} else {
+							m.vms.sortCol = col
+							m.vms.sortAsc = true
+						}
+						m.vms.applySort()
+						return m, nil
+					}
+				case tabProjects:
+					if col := m.projects.columnAtX(localX); col >= 0 {
+						if col == m.projects.sortCol {
+							m.projects.sortAsc = !m.projects.sortAsc
+						} else {
+							m.projects.sortCol = col
+							m.projects.sortAsc = true
+						}
+						m.projects.applySort()
 						return m, nil
 					}
 				}
@@ -2970,7 +3048,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.sidebarW = newW
 				// Re-resize tables to the new body width.
 				h := m.bodyHeight() - bodyDataRowOffset
-				bw := m.bodyInnerWidth()
+				bw := m.bodyTableWidth()
 				applyResize(&m.hosts.table, hostsColumns(), bw, h)
 				applyResize(&m.vms.table, vmsColumns(), bw, h)
 				applyResize(&m.projects.table, projectsColumns(), bw, h)
@@ -2994,7 +3072,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.logPane.SetHeight(newVPHeight)
 				// Re-resize tables since bodyHeight changed.
 				h := m.bodyHeight() - bodyDataRowOffset
-				bw := m.bodyInnerWidth()
+				bw := m.bodyTableWidth()
 				applyResize(&m.hosts.table, hostsColumns(), bw, h)
 				applyResize(&m.vms.table, vmsColumns(), bw, h)
 				applyResize(&m.projects.table, projectsColumns(), bw, h)

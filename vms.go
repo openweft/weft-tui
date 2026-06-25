@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,11 @@ type vmsModel struct {
 	rows    []vmRow
 	loading bool
 	err     error
+	// sortCol / sortAsc : same uniform contract as hostsModel +
+	// ResourceListModel — click-to-sort with ↑/↓ arrow on the
+	// active column. Default = first column, ascending.
+	sortCol int
+	sortAsc bool
 
 	// confirmStop is the VM name pending the destructive-stop modal ;
 	// the project field disambiguates same-named VMs across projects.
@@ -141,7 +147,73 @@ func newVMsModel(theme Theme) vmsModel {
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	vp := viewport.New(80, 15)
-	return vmsModel{theme: theme, table: tbl, logsVP: vp, loading: true}
+	return vmsModel{theme: theme, table: tbl, logsVP: vp, loading: true, sortCol: 0, sortAsc: true}
+}
+
+// columnsWithSortArrow / columnAtX / applySort : same shape as
+// hostsModel — uniform click-to-sort UX across the bespoke views.
+// Audit follow-up 2026-06-25.
+func (m *vmsModel) columnsWithSortArrow() []table.Column {
+	cur := m.table.Columns()
+	src := vmsColumns()
+	if len(cur) == 0 {
+		cur = src
+	}
+	out := make([]table.Column, len(cur))
+	for i, c := range cur {
+		out[i] = c
+		if i < len(src) {
+			out[i].Title = src[i].Title
+		}
+		if i == m.sortCol {
+			arrow := " ↑"
+			if !m.sortAsc {
+				arrow = " ↓"
+			}
+			out[i].Title = out[i].Title + arrow
+		}
+	}
+	return out
+}
+
+func (m *vmsModel) columnAtX(x int) int {
+	if x < 0 {
+		return -1
+	}
+	cur := m.table.Columns()
+	if len(cur) == 0 {
+		cur = vmsColumns()
+	}
+	cumX := 0
+	for i, c := range cur {
+		if x >= cumX && x < cumX+c.Width {
+			return i
+		}
+		cumX += c.Width
+	}
+	return -1
+}
+
+func (m *vmsModel) applySort() {
+	if m.sortCol >= 0 {
+		sort.SliceStable(m.rows, func(i, j int) bool {
+			a := m.rows[i].tableRow(m.theme)
+			b := m.rows[j].tableRow(m.theme)
+			if m.sortCol >= len(a) || m.sortCol >= len(b) {
+				return false
+			}
+			if m.sortAsc {
+				return stripANSI(a[m.sortCol]) < stripANSI(b[m.sortCol])
+			}
+			return stripANSI(a[m.sortCol]) > stripANSI(b[m.sortCol])
+		})
+	}
+	tableRows := make([]table.Row, 0, len(m.rows))
+	for _, r := range m.rows {
+		tableRows = append(tableRows, r.tableRow(m.theme))
+	}
+	m.table.SetRows(tableRows)
+	m.table.SetColumns(m.columnsWithSortArrow())
 }
 
 func (m *vmsModel) selected() (name, project string) {
@@ -275,10 +347,10 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 			IP:          v.Ip,
 		}
 		rows = append(rows, row)
-		tableRows = append(tableRows, row.tableRow(m.theme))
 	}
 	m.rows = rows
-	m.table.SetRows(tableRows)
+	m.applySort()
+	_ = tableRows // legacy local ; applySort builds its own slice
 	m.loading = false
 	m.err = nil
 	m.lastRefresh = time.Now()

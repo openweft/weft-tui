@@ -98,6 +98,12 @@ type hostsModel struct {
 	rows    []hostsRow
 	loading bool
 	err     error
+	// sortCol / sortAsc mirror ResourceListModel's contract so the
+	// Hosts view inherits the same click-to-sort UX as the catalogue
+	// views (Networks, Subnets, etc.). Default = first column,
+	// ascending. Audit 2026-06-25 follow-up.
+	sortCol int
+	sortAsc bool
 	// controlPlaneUUIDs is the set of host UUIDs that are MEMBERS of
 	// the control plane's etcd quorum — populated at boot from
 	// GetClusterInfo.control_plane_host_uuids (see main.go's
@@ -416,7 +422,77 @@ func newHostsModel(theme Theme) hostsModel {
 	s.Cell = s.Cell.Padding(0, 0)
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
-	return hostsModel{theme: theme, table: tbl, loading: true}
+	return hostsModel{theme: theme, table: tbl, loading: true, sortCol: 0, sortAsc: true}
+}
+
+// columnsWithSortArrow mirrors ResourceListModel's helper : reads
+// the table's CURRENT (rescaled) columns + suffixes only the
+// active sort col's title with ↑ / ↓. Audit follow-up 2026-06-25.
+func (m *hostsModel) columnsWithSortArrow() []table.Column {
+	cur := m.table.Columns()
+	src := hostsColumns()
+	if len(cur) == 0 {
+		cur = src
+	}
+	out := make([]table.Column, len(cur))
+	for i, c := range cur {
+		out[i] = c
+		if i < len(src) {
+			out[i].Title = src[i].Title
+		}
+		if i == m.sortCol {
+			arrow := " ↑"
+			if !m.sortAsc {
+				arrow = " ↓"
+			}
+			out[i].Title = out[i].Title + arrow
+		}
+	}
+	return out
+}
+
+// columnAtX maps a body-relative X click coordinate to a hosts
+// column index. Returns -1 when X falls past the last column.
+func (m *hostsModel) columnAtX(x int) int {
+	if x < 0 {
+		return -1
+	}
+	cur := m.table.Columns()
+	if len(cur) == 0 {
+		cur = hostsColumns()
+	}
+	cumX := 0
+	for i, c := range cur {
+		if x >= cumX && x < cumX+c.Width {
+			return i
+		}
+		cumX += c.Width
+	}
+	return -1
+}
+
+// applySort sorts m.rows by the active sort column + re-renders
+// the table rows. Same shape as ResourceListModel.applyRowsToTable.
+func (m *hostsModel) applySort() {
+	if m.sortCol >= 0 {
+		sort.SliceStable(m.rows, func(i, j int) bool {
+			a := m.rows[i].tableRow(m.theme, m.controlPlaneUUIDs)
+			b := m.rows[j].tableRow(m.theme, m.controlPlaneUUIDs)
+			if m.sortCol >= len(a) || m.sortCol >= len(b) {
+				return false
+			}
+			if m.sortAsc {
+				return stripANSI(a[m.sortCol]) < stripANSI(b[m.sortCol])
+			}
+			return stripANSI(a[m.sortCol]) > stripANSI(b[m.sortCol])
+		})
+	}
+	tableRows := make([]table.Row, 0, len(m.rows))
+	for _, r := range m.rows {
+		tableRows = append(tableRows, r.tableRow(m.theme, m.controlPlaneUUIDs))
+	}
+	m.table.SetRows(tableRows)
+	m.table.SetColumns(m.columnsWithSortArrow())
 }
 
 // selectedUUID returns the UUID column value of the currently
@@ -469,12 +545,10 @@ func (m *hostsModel) placementByUUID(uuid string) (string, string, string) {
 // new VMS column reflects the count without waiting for the next
 // hostsLoadedMsg. Missing UUIDs map to 0 (no VM placed).
 func (m *hostsModel) applyVMCounts(counts map[string]int) {
-	tableRows := make([]table.Row, 0, len(m.rows))
 	for i := range m.rows {
 		m.rows[i].VMCount = counts[m.rows[i].UUID]
-		tableRows = append(tableRows, m.rows[i].tableRow(m.theme, m.controlPlaneUUIDs))
 	}
-	m.table.SetRows(tableRows)
+	m.applySort()
 }
 
 // applyHosts refreshes the in-memory rows + the underlying table.
@@ -486,7 +560,6 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 		connected[u] = true
 	}
 	rows := make([]hostsRow, 0, len(resp.Hosts))
-	tableRows := make([]table.Row, 0, len(resp.Hosts))
 	for _, h := range resp.Hosts {
 		hr := hostsRow{
 			UUID:       h.Uuid,
@@ -552,10 +625,9 @@ func (m *hostsModel) applyHosts(resp *weftv1.ListHostsResponse) {
 			})
 		}
 		rows = append(rows, hr)
-		tableRows = append(tableRows, hr.tableRow(m.theme, m.controlPlaneUUIDs))
 	}
 	m.rows = rows
-	m.table.SetRows(tableRows)
+	m.applySort() // sorts + SetRows + SetColumns with arrow
 	m.loading = false
 	m.err = nil
 	m.lastRefresh = time.Now()
