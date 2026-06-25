@@ -24,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
@@ -243,10 +242,6 @@ func (e Endpoint) String() string {
 	}
 	return strings.Join(parts, " ")
 }
-
-// _ keeps strconv imported when the resolver doesn't need it (no
-// integer parsing in the static-endpoint path).
-var _ = strconv.Itoa
 
 // resolveEndpointsFromConfig loads the operator's clusters.hcl,
 // picks the requested cluster (or the first one when wanted is ""),

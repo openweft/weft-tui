@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +27,8 @@ import (
 	weftclient "github.com/openweft/weft-client"
 	weftv1 "github.com/openweft/weft-proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ResilientClient is the failover-capable weftv1.WeftAgentClient.
@@ -46,6 +47,12 @@ type ResilientClient struct {
 
 	// onSwitch fires after every successful endpoint swap. nil = no-op.
 	onSwitch func(active Endpoint)
+	// onEvent fires on every diagnostic message (dial fail, reconnect
+	// success, failover exhausted). The TUI hooks this up to its
+	// status bar ; without a hook, events are dropped silently. The
+	// previous behaviour wrote each event to os.Stderr which bled
+	// through the alt-screen + scrolled across the rendered UI.
+	onEvent func(level, msg string)
 
 	failures       atomic.Int32
 	healthInterval time.Duration
@@ -54,6 +61,15 @@ type ResilientClient struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 }
+
+// resilient event levels — surfaced to the TUI's status bar through
+// the onEvent hook. "info" = green/grey ; "warn" = yellow ; "error"
+// = red. The TUI maps these to its theme.
+const (
+	ResilientEventInfo  = "info"
+	ResilientEventWarn  = "warn"
+	ResilientEventError = "error"
+)
 
 // NewResilientClient picks the first endpoint that dials successfully
 // + spins up the heartbeat goroutine. Returns an error only when
@@ -81,6 +97,31 @@ func (r *ResilientClient) SetOnSwitch(fn func(Endpoint)) {
 	r.mu.Lock()
 	r.onSwitch = fn
 	r.mu.Unlock()
+}
+
+// SetOnEvent wires the diagnostic-event hook. fn is invoked on dial
+// failures, successful reconnects, and exhausted failover. The TUI
+// pipes this into its status bar so the connection lifecycle is
+// visible without spamming os.Stderr (which bleeds through alt-screen).
+func (r *ResilientClient) SetOnEvent(fn func(level, msg string)) {
+	r.mu.Lock()
+	r.onEvent = fn
+	r.mu.Unlock()
+}
+
+// emitEvent fires the onEvent hook. Centralised so every diagnostic
+// flows through the same path ; no more direct os.Stderr writes from
+// anywhere in the wrapper. The caller MUST NOT hold r.mu — emitEvent
+// takes its own read lock to snapshot the hook. connectNext (which
+// holds the write lock) reads r.onEvent directly + calls the hook
+// after unlocking to avoid self-deadlock.
+func (r *ResilientClient) emitEvent(level, msg string) {
+	r.mu.RLock()
+	hook := r.onEvent
+	r.mu.RUnlock()
+	if hook != nil {
+		hook(level, msg)
+	}
 }
 
 // Active returns the endpoint the wrapper is currently talking to.
@@ -149,7 +190,34 @@ func (r *ResilientClient) dial(e Endpoint) (weftv1.WeftAgentClient, *grpc.Client
 // connectNext walks the endpoint list starting at idx+1, dialling
 // each until one succeeds. Swaps the embedded WeftAgentClient under
 // the write lock on success.
+//
+// Lock discipline : all callbacks (onSwitch, onEvent) fire AFTER the
+// mutex is released. Calling them while the write lock is held used
+// to self-deadlock when the hook tried to re-enter the wrapper (and
+// any RLock under the write lock blocks forever) — see
+// TestNewResilientClient_AllUnreachable's regression.
 func (r *ResilientClient) connectNext() error {
+	// Pending callbacks captured while the lock is held ; fired after
+	// the defer unwinds. Lets us snapshot the hook + payload safely.
+	type pendingEvent struct{ level, msg string }
+	var pendingEvents []pendingEvent
+	var switchedTo *Endpoint
+	defer func() {
+		// onSwitch always fires for the success case ; onEvent
+		// flushes every queued dial-failure warning. snapshotted
+		// hooks below ; safe to call without the lock.
+		hookEvent := r.snapshotEventHook()
+		hookSwitch := r.snapshotSwitchHook()
+		for _, ev := range pendingEvents {
+			if hookEvent != nil {
+				hookEvent(ev.level, ev.msg)
+			}
+		}
+		if switchedTo != nil && hookSwitch != nil {
+			hookSwitch(*switchedTo)
+		}
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var lastErr error
@@ -158,7 +226,10 @@ func (r *ResilientClient) connectNext() error {
 		ep := r.endpoints[i]
 		client, conn, sshd, err := r.dial(ep)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "weft-tui: dial %s: %v\n", ep, err)
+			pendingEvents = append(pendingEvents, pendingEvent{
+				level: ResilientEventWarn,
+				msg:   fmt.Sprintf("dial %s : %v", ep, err),
+			})
 			lastErr = err
 			continue
 		}
@@ -175,16 +246,31 @@ func (r *ResilientClient) connectNext() error {
 		if oldSSH != nil {
 			_ = oldSSH.Close()
 		}
-		if r.onSwitch != nil {
-			r.onSwitch(ep)
-		}
-		fmt.Fprintf(os.Stderr, "weft-tui: connected to %s\n", ep)
+		// Queue the success callback ; fired after mu unlocks.
+		ep2 := ep
+		switchedTo = &ep2
 		return nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no endpoints configured")
 	}
 	return fmt.Errorf("all %d endpoints unreachable, last error: %w", len(r.endpoints), lastErr)
+}
+
+// snapshotEventHook returns the current onEvent callback under a
+// read lock. Used by deferred callback dispatch in connectNext.
+func (r *ResilientClient) snapshotEventHook() func(level, msg string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.onEvent
+}
+
+// snapshotSwitchHook returns the current onSwitch callback under a
+// read lock.
+func (r *ResilientClient) snapshotSwitchHook() func(Endpoint) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.onSwitch
 }
 
 // watchdog runs GetClusterInfo every healthInterval. A failed call
@@ -211,10 +297,20 @@ func (r *ResilientClient) watchdog() {
 			}
 			_, err := cli.GetClusterInfo(ctx, &weftv1.GetClusterInfoRequest{})
 			cancel()
+			// Unimplemented is NOT a connection failure : the agent
+			// is up + serving gRPC, the RPC just isn't in its build
+			// (legacy server pre-dating ClusterInfo). The link is
+			// healthy ; resetting the failure counter prevents a
+			// pointless failover cascade across the whole endpoint
+			// list when EVERY agent is on the same old build.
+			if err != nil && status.Code(err) == codes.Unimplemented {
+				r.failures.Store(0)
+				continue
+			}
 			if err != nil {
 				if r.failures.Add(1) >= r.failureBudget {
 					if reconnectErr := r.connectNext(); reconnectErr != nil {
-						fmt.Fprintf(os.Stderr, "weft-tui: failover failed: %v\n", reconnectErr)
+						r.emitEvent(ResilientEventError, fmt.Sprintf("failover failed : %v", reconnectErr))
 					}
 				}
 			} else {

@@ -27,11 +27,16 @@ const (
 	// 4 chars holds 3 letters + a separator — enough to render
 	// "N/A" or a short truncation.
 	columnMinWidth = 4
-	// tableSidePadding accounts for the table widget's borders +
-	// cursor column. Empirically the bubbles widget eats ~4 cols
-	// of chrome per row ; subtract from the available width before
-	// distributing.
+	// tableSidePadding accounts for the table widget's outer chrome
+	// (cursor column + border edges). Empirically ~4 cols.
 	tableSidePadding = 4
+	// tableCellPaddingCols is the per-column overhead added by the
+	// Header / Cell styles. The TUI sets those to Padding(0, 0) (no
+	// horizontal padding) in newHostsModel / newVMsModel / etc., so
+	// the renderable cell width == col.Width and the rendered header
+	// row sums to exactly sum(col.Width). If a future refactor adds
+	// horizontal padding back, raise this to 2.
+	tableCellPaddingCols = 0
 )
 
 // rescaleColumns returns a fresh slice of columns whose widths sum
@@ -49,7 +54,11 @@ func rescaleColumns(orig []table.Column, availableWidth int) []table.Column {
 	if availableWidth <= 0 || len(orig) == 0 {
 		return orig
 	}
-	usable := availableWidth - tableSidePadding
+	// Total chrome = outer table chrome + per-column padding from the
+	// Header/Cell style. Without subtracting the per-column padding,
+	// the rendered header line (which is N cells of width + padding)
+	// overflows the body box.
+	usable := availableWidth - tableSidePadding - len(orig)*tableCellPaddingCols
 	if usable < len(orig)*columnMinWidth {
 		usable = len(orig) * columnMinWidth
 	}

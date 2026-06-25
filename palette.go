@@ -113,7 +113,9 @@ func (p *paletteModel) clampSelected() {
 // switch the active view.
 func (p *paletteModel) handleKey(msg tea.KeyMsg) (cmd tea.Cmd, switchTo string) {
 	switch msg.String() {
-	case "esc":
+	case "esc", "ctrl+c":
+		// Ctrl+C dismisses too — without it the palette
+		// silently swallows the quit shortcut. Audit 2026-06-25.
 		p.open = false
 		p.input = ""
 		p.selected = 0

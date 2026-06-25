@@ -96,14 +96,6 @@ func NewThemeWith(p ThemePreset) Theme {
 			Bold(true).
 			Foreground(p.Primary).
 			Padding(0, 1),
-		Tab: lipgloss.NewStyle().
-			Foreground(p.Muted).
-			Padding(0, 2),
-		ActiveTab: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(p.Primary).
-			Underline(true).
-			Padding(0, 2),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(p.Muted).
 			Padding(0, 1),

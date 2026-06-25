@@ -261,7 +261,7 @@ func (m *hostsModel) detailView(width int) string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(m.theme.Faint.Render("Esc / Enter close · c cordon · u uncordon · d state→down · x remove"))
+	b.WriteString(m.theme.Faint.Render("Esc / Enter close · c cordon · u uncordon · d state→down · o remove"))
 	return m.theme.HelpBox.Render(b.String())
 }
 
@@ -584,7 +584,10 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	}
 	state := stateText
 	if strings.EqualFold(h.State, "down") {
-		state = theme.BadgeBad.Render("✖ " + stateText)
+		// Plain text — no inline ANSI in a bubbles/table cell ;
+		// the widget's truncator cuts ANSI mid-sequence on narrow
+		// widths, blanking the cell. Audit 2026-06-25.
+		state = "✖ " + stateText
 	}
 	// STATUS column = admin intent, derived from the State enum
 	// today : HostStateInactive is the operator-marked "frozen"

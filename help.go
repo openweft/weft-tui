@@ -19,7 +19,11 @@ type helpBinding struct {
 var globalBindings = []helpBinding{
 	{"1..4", "switch tab (Hosts / VMs / Projects / Events)"},
 	{":", "open command palette (`:networks`, `:volumes`, …)"},
+	{"a", "open the per-row Actions context menu (was `m` pre-2026-06-24)"},
 	{"r", "refresh current tab"},
+	{"Ctrl+B", "toggle sidebar collapsed / expanded"},
+	{"< / >", "cycle the active sort column (catalogue views)"},
+	{"S", "flip ascending ↔ descending on the active sort column"},
 	{"T", "cycle colour theme (green / blue / amber / violet / mono) ; persisted to ~/.weft/tui-theme"},
 	{"?", "toggle this help overlay"},
 	{"q / Ctrl+C", "quit"},
@@ -46,7 +50,7 @@ var hostsBindings = []helpBinding{
 	{"c", "cordon selected host"},
 	{"u", "uncordon selected host"},
 	{"d", "set state → down (drain prep)"},
-	{"x", "remove host (asks for confirmation)"},
+	{"o", "remove host (asks for confirmation)"},
 	{"y / n", "confirm / cancel remove (when prompted)"},
 	{"CP column", "`*` marks the host serving this TUI session's gRPC socket (the CP you're driving)"},
 }
@@ -55,7 +59,9 @@ var vmsBindings = []helpBinding{
 	{"↑/↓ or j/k", "move selection"},
 	{"s", "start selected VM"},
 	{"S", "stop selected VM (asks for confirmation)"},
-	{"R", "restart (stop → start, sequential)"},
+	{"R", "restart selected VM (atomic RPC, rolls back on failure)"},
+	{"a", "activate VM (admin status → active) — also opens the Actions menu"},
+	{"i", "inactivate VM (admin status → inactive ; runtime keeps going)"},
 	{"l", "open serial log viewer (tail ~200 lines)"},
 	{"Esc", "close log viewer / cancel confirm modal"},
 }
