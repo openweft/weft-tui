@@ -47,8 +47,13 @@ type sshDialer struct {
 
 // newSSHDialer dials the remote SSH server using the auth methods +
 // known-hosts policy of the Endpoint. Returns a dialer ready to open
-// gRPC-over-SSH-channel connections.
-func newSSHDialer(e Endpoint) (*sshDialer, error) {
+// gRPC-over-SSH-channel connections. The ctx is the
+// ResilientClient's stop channel ; if the caller quits while
+// we're mid-handshake (TCP DialContext + ssh.NewClientConn), the
+// dial unwinds quickly instead of blocking on the 5s Timeout.
+// Audit 2026-06-25 fix : without this Close() blocked ~5s × N
+// endpoints on a degraded cluster.
+func newSSHDialer(ctx context.Context, e Endpoint) (*sshDialer, error) {
 	user, host, port := parseSSHAddress(e.Address, e.SSHUser)
 	authMethods, err := sshAuthMethods(e.SSHKey)
 	if err != nil {
@@ -65,11 +70,36 @@ func newSSHDialer(e Endpoint) (*sshDialer, error) {
 		Timeout:         5 * time.Second,
 	}
 	addr := net.JoinHostPort(host, port)
-	client, err := ssh.Dial("tcp", addr, cfg)
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	tcpConn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
-	return &sshDialer{client: client, remoteSock: e.SSHSocket}, nil
+	// ssh.NewClientConn doesn't take a ctx ; race the handshake
+	// against the ctx via a goroutine. If ctx fires first we close
+	// the TCP conn and the handshake unwinds with an EOF.
+	type result struct {
+		conn ssh.Conn
+		chs  <-chan ssh.NewChannel
+		reqs <-chan *ssh.Request
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, chs, reqs, err := ssh.NewClientConn(tcpConn, addr, cfg)
+		done <- result{c, chs, reqs, err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = tcpConn.Close()
+		return nil, ctx.Err()
+	case r := <-done:
+		if r.err != nil {
+			return nil, fmt.Errorf("ssh handshake %s: %w", addr, r.err)
+		}
+		client := ssh.NewClient(r.conn, r.chs, r.reqs)
+		return &sshDialer{client: client, remoteSock: e.SSHSocket}, nil
+	}
 }
 
 // Close terminates the SSH connection. Idempotent.

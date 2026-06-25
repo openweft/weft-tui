@@ -161,6 +161,18 @@ func (r *ResilientClient) Close() error {
 // Returns (client, conn, sshDialer, error). sshDialer is non-nil only
 // for the in-process SSH path so connectNext / Close can release it.
 func (r *ResilientClient) dial(e Endpoint) (weftv1.WeftAgentClient, *grpc.ClientConn, *sshDialer, error) {
+	// Derive a context from the stop channel so the SSH dial path
+	// unwinds quickly if the operator quits mid-handshake. Audit
+	// 2026-06-25 : was blocking up to N×5s on a degraded cluster.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-r.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer cancel()
 	// Local socket : already-tunneled by the operator.
 	if e.Address == "" && e.Socket != "" {
 		c, conn, err := weftclient.Client(e.Socket)
@@ -168,7 +180,7 @@ func (r *ResilientClient) dial(e Endpoint) (weftv1.WeftAgentClient, *grpc.Client
 	}
 	// Remote SSH (in-process pure-Go).
 	if e.Address != "" && e.SSHSocket != "" {
-		d, err := newSSHDialer(e)
+		d, err := newSSHDialer(ctx, e)
 		if err != nil {
 			return nil, nil, nil, err
 		}
