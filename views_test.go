@@ -328,10 +328,10 @@ func TestContextMenu_OverlaysOverBodyNotBottom(t *testing.T) {
 	// Inject a row so vms.selected() returns non-empty + the menu
 	// builds.
 	m.vms.rows = []vmRow{{Name: "vm-a", Project: "p"}}
-	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m = mm.(Model)
 	if !m.menu.open {
-		t.Fatal("menu didn't open after `m` key")
+		t.Fatal("menu didn't open after `a` key")
 	}
 
 	view := m.View()

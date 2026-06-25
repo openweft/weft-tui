@@ -50,6 +50,11 @@ type vmRow struct {
 	// ("active"/"inactive"/"draining"), orthogonal to the runtime
 	// State. 2026-06-24 VM status MVP.
 	Status   string
+	// Flavor is the matched compute envelope name (looked up
+	// client-side by matching (CPU, RAM) against the flavors
+	// catalogue). Empty when no flavor matches the shape exactly
+	// — VM was created with a custom envelope.
+	Flavor   string
 	Image    string
 	CPU      uint32
 	MemMB    uint64
@@ -110,7 +115,8 @@ func vmsColumns() []table.Column {
 		{Title: "HOST", Width: 10},
 		{Title: "STATE", Width: 10},
 		{Title: "STATUS", Width: 10},
-		{Title: "IMAGE", Width: 22},
+		{Title: "FLAVOR", Width: 12},
+		{Title: "IMAGE", Width: 20},
 		{Title: "CPU", Width: 4},
 		{Title: "MEM-MB", Width: 8},
 	}
@@ -233,7 +239,7 @@ func (m *vmsModel) refreshProjectColumn(tenantLookup func(projectUUID string) st
 // column renders as "tenant:project" — the project display name
 // alone isn't deterministic across tenants (two tenants can each own
 // a project called "default").
-func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) (name, az, rack string), tenantLookup func(projectUUID string) string) {
+func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid string) (name, az, rack string), tenantLookup func(projectUUID string) string, flavorLookup func(cpu uint32, memMb uint64) string) {
 	rows := make([]vmRow, 0, len(resp.Vms))
 	tableRows := make([]table.Row, 0, len(resp.Vms))
 	for _, v := range resp.Vms {
@@ -245,6 +251,10 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 		var tenant string
 		if tenantLookup != nil && v.ProjectUuid != "" {
 			tenant = tenantLookup(v.ProjectUuid)
+		}
+		flavor := ""
+		if flavorLookup != nil {
+			flavor = flavorLookup(v.Cpu, v.MemMb)
 		}
 		row := vmRow{
 			Name:        v.Name,
@@ -258,6 +268,7 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 			Rack:        rack,
 			State:       state,
 			Status:      vmStatusString(v.Status),
+			Flavor:      flavor,
 			Image:       v.Image,
 			CPU:         v.Cpu,
 			MemMB:       v.MemMb,
@@ -309,6 +320,7 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 		host,
 		state,
 		dashEmpty(r.Status),
+		dashEmpty(r.Flavor),
 		dashEmpty(shortImage(r.Image)),
 		fmt.Sprintf("%d", r.CPU),
 		fmt.Sprintf("%d", r.MemMB),

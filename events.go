@@ -66,7 +66,18 @@ func (m eventsModel) View(width int) string {
 	header := state + "  " + m.theme.Faint.Render(fmt.Sprintf("%d lines · p pause · c clear · j/k scroll", len(m.lines)))
 	body := m.vp.View()
 	if len(m.lines) == 0 {
-		body = m.theme.Faint.Render("  waiting for events…")
+		// Keep the SAME line count as a full viewport — operator-
+		// reported 2026-06-24 : the bottom border of the log pane
+		// moved up by N-1 lines when switching from Logs to a
+		// freshly-opened Events tab because the empty body had 1
+		// line ("waiting for events…") instead of vp.Height lines.
+		// Pad with blank lines so the pane's total height stays
+		// constant across tab switches.
+		blank := "  waiting for events…"
+		body = m.theme.Faint.Render(blank)
+		for i := 1; i < m.vp.Height; i++ {
+			body += "\n"
+		}
 	}
 	return header + "\n" + body
 }

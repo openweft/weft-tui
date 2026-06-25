@@ -23,16 +23,23 @@ type ProjectsClient interface {
 	// CountByProject RPC, so we fan out once per refresh against the
 	// same ListVMs call the VMs tab uses, then group client-side.
 	ListVMs(ctx context.Context, in *weftv1.ListVMsRequest, opts ...grpc.CallOption) (*weftv1.ListVMsResponse, error)
+	// ListTenants powers the VMs tab's "tenant:project" PROJECT
+	// column — the project display name alone isn't deterministic
+	// (two tenants can each own a project called "default"). We
+	// fan-out from loadProjectsCmd so the operator's first VM
+	// refresh already has the tenant lookup populated.
+	ListTenants(ctx context.Context, in *weftv1.ListTenantsRequest, opts ...grpc.CallOption) (*weftv1.ListTenantsResponse, error)
 }
 
 // projectRow is the table-side view of one project. VMCount is
 // derived from a sibling ListVMs call ; -1 marks "unknown" so the
 // renderer can show "?" while the first count call is in flight.
 type projectRow struct {
-	Name    string
-	UUID    string
-	Created time.Time
-	VMCount int
+	Name       string
+	UUID       string
+	TenantUUID string // ProjectInfo.tenant_uuid ; empty for untenanted projects
+	Created    time.Time
+	VMCount    int
 }
 
 // projectsModel owns the Projects tab : table, create-inline form
@@ -43,6 +50,12 @@ type projectsModel struct {
 	rows    []projectRow
 	loading bool
 	err     error
+
+	// tenantNames is the tenantUUID → tenantName map populated by
+	// the same load cycle that fetches projects (see loadTenantsCmd).
+	// Used by tenantNameForProject so the VMs tab can prefix the
+	// PROJECT column with the owning tenant.
+	tenantNames map[string]string
 
 	// Create form. Active when input.Focused().
 	creating bool
@@ -60,8 +73,9 @@ type projectsModel struct {
 // layout (see hostsColumns for the responsive-layout contract).
 func projectsColumns() []table.Column {
 	return []table.Column{
-		{Title: "NAME", Width: 24},
-		{Title: "UUID", Width: 10},
+		{Title: "TENANT", Width: 14},
+		{Title: "NAME", Width: 20},
+		{Title: "UUID", Width: 36},
 		{Title: "CREATED", Width: 20},
 		{Title: "VMS", Width: 6},
 	}
@@ -75,11 +89,14 @@ func newProjectsModel(theme Theme) projectsModel {
 		table.WithHeight(15),
 	)
 	s := table.DefaultStyles()
+	// Padding(0, 0) : see hosts.go newHostsModel for the rationale.
 	s.Header = s.Header.
+		Padding(0, 0).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
+	s.Cell = s.Cell.Padding(0, 0)
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 
@@ -106,7 +123,10 @@ func (m *projectsModel) selected() (uuid, name string) {
 // VM-count map keyed by project_uuid that the caller fetches in
 // parallel ; nil = leave the previous counts intact (so a transient
 // ListVMs error doesn't blank the column).
-func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts map[string]int) {
+func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts map[string]int, tenants map[string]string) {
+	if tenants != nil {
+		m.tenantNames = tenants
+	}
 	rows := make([]projectRow, 0, len(resp.Projects))
 	tableRows := make([]table.Row, 0, len(resp.Projects))
 	// Keep prior counts when the caller passed nil.
@@ -116,9 +136,10 @@ func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts 
 	}
 	for _, p := range resp.Projects {
 		r := projectRow{
-			Name:    p.Name,
-			UUID:    p.Uuid,
-			VMCount: -1,
+			Name:       p.Name,
+			UUID:       p.Uuid,
+			TenantUUID: p.TenantUuid,
+			VMCount:    -1,
 		}
 		if p.CreatedAtUnixNs != 0 {
 			r.Created = time.Unix(0, p.CreatedAtUnixNs)
@@ -134,7 +155,7 @@ func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts 
 			}
 		}
 		rows = append(rows, r)
-		tableRows = append(tableRows, r.tableRow())
+		tableRows = append(tableRows, r.tableRow(m.tenantNames))
 	}
 	m.rows = rows
 	m.table.SetRows(tableRows)
@@ -143,11 +164,43 @@ func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts 
 	m.lastRefresh = time.Now()
 }
 
-func (r projectRow) tableRow() table.Row {
-	uuidShort := r.UUID
-	if len(uuidShort) > 8 {
-		uuidShort = uuidShort[:8]
+// tenantNameForProject resolves a project UUID into the owning
+// tenant's display name. Returns "" when the project has no tenant
+// (untenanted) or when the project / tenant aren't loaded yet (the
+// VMs tab then renders the bare project name — graceful degradation
+// on cold start before the projects + tenants refresh complete).
+func (m *projectsModel) tenantNameForProject(projectUUID string) string {
+	if projectUUID == "" {
+		return ""
 	}
+	for _, r := range m.rows {
+		if r.UUID != projectUUID {
+			continue
+		}
+		if r.TenantUUID == "" {
+			return ""
+		}
+		if name, ok := m.tenantNames[r.TenantUUID]; ok {
+			return name
+		}
+		// Fall back to the UUID prefix : the tenants list hasn't
+		// loaded yet but at least the operator sees "something"
+		// rather than two identical "default" rows.
+		if len(r.TenantUUID) > 8 {
+			return r.TenantUUID[:8]
+		}
+		return r.TenantUUID
+	}
+	return ""
+}
+
+func (r projectRow) tableRow(tenantNames map[string]string) table.Row {
+	// Full UUID like every other catalogue view (Racks, AZs,
+	// Tenants…). The 8-char short form was a leftover from the
+	// pre-multi-view layout when projects had a single dense table
+	// — now that every UUID column shows the full form, projects
+	// align. Operator directive 2026-06-24.
+	uuidFull := r.UUID
 	created := "—"
 	if !r.Created.IsZero() {
 		created = r.Created.Format("2006-01-02 15:04:05")
@@ -156,9 +209,26 @@ func (r projectRow) tableRow() table.Row {
 	if r.VMCount >= 0 {
 		count = fmt.Sprintf("%d", r.VMCount)
 	}
+	// TENANT column : resolve tenant_uuid → display name via the
+	// caller's cache. Falls back to UUID prefix when the tenants
+	// list hasn't loaded yet (cold start) so two "default" projects
+	// in different tenants stay distinguishable. Operator directive
+	// 2026-06-24 "dans la vue projects il faut les rattacher a
+	// des tenants".
+	tenant := "—"
+	if r.TenantUUID != "" {
+		if name, ok := tenantNames[r.TenantUUID]; ok && name != "" {
+			tenant = name
+		} else if len(r.TenantUUID) >= 8 {
+			tenant = r.TenantUUID[:8]
+		} else {
+			tenant = r.TenantUUID
+		}
+	}
 	return table.Row{
+		tenant,
 		dashEmpty(r.Name),
-		uuidShort,
+		dashEmpty(uuidFull),
 		created,
 		count,
 	}
@@ -202,7 +272,13 @@ func (m projectsModel) View(width int) string {
 type projectsLoadedMsg struct {
 	resp   *weftv1.ListProjectsResponse
 	counts map[string]int
-	err    error
+	// tenants is the tenantUUID → tenantName map fetched in parallel
+	// with the project list. nil means the ListTenants call failed
+	// (or wasn't implemented yet on the server) — the model keeps
+	// its previous map so the VMs tab degrades to bare project
+	// names instead of blanking.
+	tenants map[string]string
+	err     error
 }
 
 // projectActionMsg surfaces a create / delete outcome to the status
@@ -250,7 +326,21 @@ func loadProjectsCmd(client ProjectsClient) tea.Cmd {
 				}
 			}
 		}
-		return projectsLoadedMsg{resp: resp, counts: counts}
+		// Fetch tenants in parallel with the count join so the VMs
+		// tab's tenant prefix is ready as soon as the projects tab
+		// refreshes. Unimplemented / failing ListTenants is treated
+		// as "no tenant map this round" — caller keeps prior map.
+		var tenants map[string]string
+		if tResp, tErr := client.ListTenants(ctx, &weftv1.ListTenantsRequest{}); tErr == nil && tResp != nil {
+			tenants = make(map[string]string, len(tResp.Tenants))
+			for _, t := range tResp.Tenants {
+				if t == nil || t.Uuid == "" {
+					continue
+				}
+				tenants[t.Uuid] = t.Name
+			}
+		}
+		return projectsLoadedMsg{resp: resp, counts: counts, tenants: tenants}
 	}
 }
 

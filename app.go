@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	weftv1 "github.com/openweft/weft-proto"
+	"google.golang.org/grpc"
 )
 
 // tab identifies one of the top-level views. The integer is also
@@ -64,6 +65,13 @@ type Client interface {
 	VMsClient
 	ProjectsClient
 	EventsClient
+	FlavorsClient
+}
+
+// FlavorsClient is the narrow ListFlavors surface needed to fill
+// the VMs FLAVOR column's lookup cache.
+type FlavorsClient interface {
+	ListFlavors(ctx context.Context, in *weftv1.ListFlavorsRequest, opts ...grpc.CallOption) (*weftv1.ListFlavorsResponse, error)
 }
 
 // Model is the Bubble Tea state. Exported so the test suite can poke
@@ -72,6 +80,11 @@ type Model struct {
 	theme    Theme
 	themeIdx int // index into themePresets ; cycled by the `T` key
 	client   Client
+	// flavorByShape caches the (vcpu, mem_mib) → flavor name map.
+	// Populated by flavorsLoadedMsg (best-effort, refreshed alongside
+	// vmsLoadedMsg). The vmsModel reads it via the flavorLookup
+	// closure to fill the FLAVOR column.
+	flavorByShape map[flavorShapeKey]string
 	// clusterName is shown in the title bar to disambiguate which
 	// federated cluster the operator is currently inspecting.
 	// Sourced from --cluster-name flag or $WEFT_CLUSTER_NAME at
@@ -303,6 +316,125 @@ func (m *Model) projectsForResource(resourceID string, row map[string]any) []rel
 		out = append(out, relatedProject{Name: p.Name, UUID: p.UUID})
 	}
 	return out
+}
+
+// formatActionHint styles one action label so the shortcut key
+// pops without bracket clutter. The matching letter in the label
+// (case-insensitive) is rendered bold + underlined ; the rest
+// stays Faint. When the key letter isn't in the label (e.g. `x`
+// for "remove", `R` for "restart"), the key is appended in
+// parentheses : "remove (x)". Operator directive 2026-06-24
+// "mettre en bold et/ou souligné la lettre concernée plutôt
+// qu'ajouter entre crochets".
+func formatActionHint(theme Theme, key, label string) string {
+	if key == "" || label == "" {
+		return label
+	}
+	// Match the FIRST occurrence of the key in the label, case-
+	// insensitive. Preserve the label's original casing in the
+	// output (`Activate` stays `Activate`, not `activate`).
+	keyLow := strings.ToLower(key)
+	labelLow := strings.ToLower(label)
+	idx := strings.Index(labelLow, keyLow)
+	emph := lipgloss.NewStyle().Bold(true).Underline(true).Foreground(theme.SidebarItemActive.GetForeground())
+	if idx < 0 || len(key) != 1 {
+		// Fallback : key not present in the label (or multi-rune
+		// key like `^P`). Append it in parentheses, bold.
+		return theme.Faint.Render(label+" (") + emph.Render(key) + theme.Faint.Render(")")
+	}
+	prefix := label[:idx]
+	letter := label[idx : idx+1]
+	suffix := label[idx+1:]
+	return theme.Faint.Render(prefix) + emph.Render(letter) + theme.Faint.Render(suffix)
+}
+
+// renderActionBar returns a 1-line faint-styled hint with the
+// keyboard shortcuts available on the active view. Empty string
+// when no actions apply (e.g. modal overlays). The bar is non-
+// clickable — keys / context menu (`m`) are the real input paths
+// — but it surfaces the verbs operators would otherwise have to
+// memorise. 2026-06-24 operator directive.
+func (m Model) renderActionBar(width int) string {
+	type hint struct{ key, label string }
+	// Single "Actions" button (opens the context menu via `m`) +
+	// "refresh" (`r`). Operator directive 2026-06-24 : "mettre un
+	// bouton Actions qui ouvre le menu avec toutes les actions
+	// dedans plutot que de les repeter dans la tabbar. il faut
+	// laisser refresh par contre". Per-tab key listings (start /
+	// restart / cordon / activate / …) are still keyboard-bound
+	// AND discoverable via the menu.
+	var hints []hint
+	switch m.active {
+	case tabHosts, tabVMs, tabProjects:
+		hints = []hint{{"a", "Actions"}, {"r", "Refresh"}}
+	case tabResource:
+		if _, ok := m.resource[m.currentResource]; !ok {
+			return ""
+		}
+		hints = []hint{{"a", "Actions"}, {"r", "Refresh"}}
+	default:
+		return ""
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(hints))
+	for _, h := range hints {
+		parts = append(parts, formatActionHint(m.theme, h.key, h.label))
+	}
+	bar := strings.Join(parts, "  ")
+	if width > 0 && lipgloss.Width(bar) > width {
+		// Truncate so the bar never spills past the body's right
+		// edge ; the table widget assumes its allotted width is
+		// the full visible area.
+		runes := []rune(stripANSI(bar))
+		if len(runes) > width {
+			bar = string(runes[:width-1]) + "…"
+		}
+	}
+	return m.theme.Faint.Render(bar)
+}
+
+// flavorShapeKey indexes the flavor cache by the (vcpu, mem_mib)
+// tuple a VM was sized at. Comparable so map[...]string works.
+type flavorShapeKey struct {
+	vcpu  uint32
+	memMb uint64
+}
+
+// flavorLookup is the closure vmsModel.applyVMs uses to fill the
+// FLAVOR column. Empty cache or no match → empty string ; the
+// table widget renders "—". 2026-06-24 VM flavor MVP.
+func (m *Model) flavorLookup(cpu uint32, memMb uint64) string {
+	if m.flavorByShape == nil {
+		return ""
+	}
+	return m.flavorByShape[flavorShapeKey{vcpu: cpu, memMb: memMb}]
+}
+
+// flavorsLoadedMsg carries the result of a one-shot ListFlavors
+// load. Update populates m.flavorByShape from it so subsequent
+// vmsLoadedMsg + applyVMs hits resolve flavor names via the cache.
+type flavorsLoadedMsg struct {
+	flavors []*weftv1.Flavor
+	err     error
+}
+
+// loadFlavorsCmd fires a ListFlavors call ; harmless if the
+// catalogue is empty (cache stays nil, FLAVOR column blanks).
+func loadFlavorsCmd(client Client) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return flavorsLoadedMsg{err: errNoClient}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := client.ListFlavors(ctx, &weftv1.ListFlavorsRequest{})
+		if err != nil || resp == nil {
+			return flavorsLoadedMsg{err: err}
+		}
+		return flavorsLoadedMsg{flavors: resp.Flavors}
+	}
 }
 
 // switchToResource flips the active view to the named resource
@@ -564,11 +696,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vms.loading = false
 			m.setError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
-			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
+			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID, m.projects.tenantNameForProject, m.flavorLookup)
 			// Push fresh per-host counts to the hosts model so the
 			// "VMS" column reflects the new placement immediately —
 			// no need to wait for the next hostsLoadedMsg.
 			m.hosts.applyVMCounts(vmCountsByHost(m.vms.rows))
+		}
+		// Side-load flavors so the next applyVMs (refresh tick or
+		// any tab switch) resolves the FLAVOR column via the cache.
+		return m, loadFlavorsCmd(m.client)
+
+	case flavorsLoadedMsg:
+		if msg.err == nil && msg.flavors != nil {
+			cache := make(map[flavorShapeKey]string, len(msg.flavors))
+			for _, f := range msg.flavors {
+				gib := uint64(ramToGiB(f.Ram))
+				cache[flavorShapeKey{vcpu: uint32(f.Vcpu), memMb: gib * 1024}] = f.Name
+			}
+			m.flavorByShape = cache
 		}
 		return m, nil
 
@@ -681,7 +826,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+Shift+Click reliably — many strip the modifiers, some
 	// fall back to right-click for paste). The mouse path in
 	// handleMouse remains as a bonus where it works.
-	if !m.menu.open && !m.palette.open && key == "m" {
+	// Operator directive 2026-06-24 : "Actions" button is bound to
+	// `a` (was `m`). Lowercase 'a' previously triggered direct
+	// Activate on VMs/AZ/Rack ; the menu intercept here now takes
+	// priority, so Activate is reached via the menu (which lists
+	// it explicitly).
+	if !m.menu.open && !m.palette.open && key == "a" {
 		items := m.buildContextMenu()
 		if len(items) > 0 {
 			m.menu.open = true
@@ -994,7 +1144,10 @@ func (m Model) handleHostsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, setStateCmd(m.client, uuid, host, "down")
-	case "x":
+	case "o":
+		// "o" for remove — picks the 4th letter of "remove" so
+		// the action-bar hint underlines a letter actually in
+		// the label. Was "x" pre-2026-06-24.
 		uuid := m.hosts.selectedUUID()
 		host := m.hosts.selectedHostname()
 		if uuid == "" {
@@ -1937,6 +2090,15 @@ func (m Model) renderBody() string {
 			content = rm.View(inner)
 		}
 	}
+	// Action toolbar at the top of the body : faint key-hint
+	// strip listing the action keys available on the current view.
+	// Followed by a faint horizontal rule separating it from the
+	// table's header — operator directive 2026-06-24 "met un
+	// frame pour separrer la barre d'action du tableau".
+	if bar := m.renderActionBar(inner); bar != "" {
+		sep := m.theme.Faint.Render(strings.Repeat("─", inner))
+		content = bar + "\n" + sep + "\n" + content
+	}
 	// MaxHeight defensive cap : the table widget normally honours its
 	// applyResize'd height, but the create-form / detail-drawer
 	// overlays can exceed it. Without MaxHeight an overflow pushes
@@ -1949,16 +2111,15 @@ func (m Model) renderBody() string {
 	// 1 row + 1 column of usable space. Height = bodyHeight - 1 (only
 	// top border kept) ; Width = bodyWidth - 1 (only right border
 	// kept) — totals stay (bodyWidth × bodyHeight).
-	// Keep a 1-col horizontal padding on each side so the table
-	// content doesn't touch the body's right border — operator
-	// directive 2026-06-24 "il faudrait avoir un leger padding
-	// entre les frames et les contenus". Still no bottom / left
-	// border (they collapsed into the log pane + sidebar borders).
+	// Drop horizontal padding so the action bar (and its separator
+	// rule line) reaches the body's right border edge-to-edge.
+	// Operator directive 2026-06-24 "joint le frame de la tab bar
+	// a droite et a gauche. idem pour l'icon/button barre".
 	return m.theme.BodyBox.
 		BorderBottom(false).
 		BorderLeft(false).
-		PaddingLeft(1).
-		PaddingRight(1).
+		PaddingLeft(0).
+		PaddingRight(0).
 		Width(m.bodyWidth() - 1).
 		Height(m.bodyHeight() - 1).
 		MaxHeight(m.bodyHeight()).
@@ -1966,11 +2127,11 @@ func (m Model) renderBody() string {
 }
 
 // bodyInnerWidth is what the body content actually has to draw on,
-// once the BodyBox border (1 col — only right is kept) + the
-// 2 cols of horizontal padding are subtracted from bodyWidth.
-// Tables use this for column width allocation.
+// once the BodyBox border (1 col — only right is kept) is
+// subtracted from bodyWidth. Horizontal padding was dropped so the
+// action bar reaches edge-to-edge (operator 2026-06-24).
 func (m Model) bodyInnerWidth() int {
-	w := m.bodyWidth() - 3
+	w := m.bodyWidth() - 1
 	if w < 16 {
 		w = 16
 	}
@@ -2279,7 +2440,7 @@ func (m Model) buildContextMenu() []contextMenuItem {
 		}
 		items = append(items, contextMenuItem{label: "Mark Down", shortcut: "d",
 			action: setStateCmd(m.client, uuid, host, "down")})
-		items = append(items, contextMenuItem{label: "Remove…", shortcut: "x",
+		items = append(items, contextMenuItem{label: "Remove…", shortcut: "o",
 			action: openHostConfirmRemoveCmd(uuid, host)})
 		return items
 	case tabVMs:
@@ -2561,6 +2722,66 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.menu.cursor = 0
 		return m, nil
 	case tea.MouseButtonLeft:
+		// Action bar click → "Actions" or "Refresh" button.
+		// Bar Y inside body = top border (1). Absolute Y = topbar + 1.
+		// Bar layout : "Actions" (7 cols) + "  " (2) + "Refresh" (7).
+		if msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
+			actionBarY := m.topbarHeight() + 1
+			if msg.Y == actionBarY {
+				localX := msg.X - m.sidebarWidth()
+				const actionsLen = 7   // "Actions"
+				const sepLen = 2       // "  "
+				const refreshLen = 7   // "Refresh"
+				switch {
+				case localX >= 0 && localX < actionsLen:
+					// Open the context menu — same effect as `a`.
+					items := m.buildContextMenu()
+					if len(items) > 0 {
+						m.menu.open = true
+						m.menu.items = items
+						m.menu.cursor = 0
+					}
+					return m, nil
+				case localX >= actionsLen+sepLen && localX < actionsLen+sepLen+refreshLen:
+					// Refresh the active view — same effect as `r`.
+					switch m.active {
+					case tabHosts:
+						return m, loadHostsCmd(m.client)
+					case tabVMs:
+						return m, loadVMsCmd(m.client)
+					case tabProjects:
+						return m, loadProjectsCmd(m.client)
+					case tabResource:
+						if rm, ok := m.resource[m.currentResource]; ok {
+							return m, rm.loadCmd()
+						}
+					}
+					return m, nil
+				}
+			}
+		}
+		// Table header click → toggle column sort (tabResource only
+		// for now ; bespoke views land in a follow-up). Header Y
+		// inside body = top border (1) + action bar (1) + sep (1)
+		// = row 3 inside body. Absolute Y = topbar + 3.
+		if m.active == tabResource && msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
+			headerY := m.topbarHeight() + 3
+			if msg.Y == headerY {
+				if rm, ok := m.resource[m.currentResource]; ok {
+					if col := rm.columnAtX(msg.X - m.sidebarWidth()); col >= 0 {
+						if col == rm.sortCol {
+							rm.toggleSortDir()
+						} else {
+							rm.sortCol = col
+							rm.sortAsc = true
+							rm.applyRowsToTable()
+						}
+						m.resource[m.currentResource] = rm
+						return m, nil
+					}
+				}
+			}
+		}
 		// Log-pane tab click : switch the active tab when the
 		// operator clicks one of the bordered tab boxes at the top
 		// of the log pane. Y is in the strip's 3-line rect ; X is

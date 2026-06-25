@@ -174,7 +174,12 @@ func (p logPane) View(theme Theme, width int, eventsBody string) string {
 	// inherently anchored to the screen bottom (it's the last
 	// thing rendered before the status bar) so the operator drags
 	// the TOP border up to grow the pane.
-	strip := p.renderTabStrip(theme, width-4)
+	// Strip spans the FULL inside width of the pane (= width - 1
+	// for the right border ; left border was dropped). Edge-to-
+	// edge so the rule line's ends meet the LogPaneBox right
+	// border, no 2-col gap. Operator directive 2026-06-24 "joint
+	// le frame de la tab bar a droite et a gauche".
+	strip := p.renderTabStrip(theme, width-1)
 	var body string
 	switch p.activeTab {
 	case "events":
@@ -189,9 +194,9 @@ func (p logPane) View(theme Theme, width int, eventsBody string) string {
 			body = theme.Faint.Render("  Events — connecting…")
 		}
 	case "terminal":
-		body = theme.Faint.Render("  Terminal — not wired yet (V0.2 : SSH multiplex).")
+		body = padLogPaneBody(theme.Faint.Render("  Terminal — not wired yet (V0.2 : SSH multiplex)."), p.vp.Height)
 	case "bookmarks":
-		body = theme.Faint.Render("  Bookmarks — not wired yet (V0.2 : pinned SSH targets).")
+		body = padLogPaneBody(theme.Faint.Render("  Bookmarks — not wired yet (V0.2 : pinned SSH targets)."), p.vp.Height)
 	default:
 		body = p.vp.View()
 	}
@@ -203,11 +208,38 @@ func (p logPane) View(theme Theme, width int, eventsBody string) string {
 	// pass in app.View() injects a T-junction (`├` / `┤` / etc.)
 	// where the log pane's top border crosses sidebar's right
 	// border so the line reads continuously.
+	// LogPaneBox keeps its top border : that line IS the divider
+	// (drag target). The strip sits inside the box just below it.
+	// Earlier 2026-06-24 attempt BorderTop(false) killed the drag
+	// handle ; reverted. The strip's rule line still moves with
+	// the drag — that's the open issue : actually anchoring the
+	// strip bottom to the divider requires the strip to live
+	// OUTSIDE the box, which is a bigger refactor (touches
+	// bodyHeight + drag handler accounting).
 	return theme.LogPaneBox.
 		BorderLeft(false).
+		PaddingLeft(0).
+		PaddingRight(0).
 		Width(width - 1).
 		MaxHeight(p.height()).
 		Render(content)
+}
+
+// padLogPaneBody right-pads a placeholder body (Terminal /
+// Bookmarks single-line stubs) with empty lines so the rendered
+// pane has the same total height as the Logs / Events tabs.
+// Without this, switching to a placeholder tab shrinks the pane
+// by N-1 rows and the LogPaneBox bottom border moves up — the
+// operator-reported "le frame bas n'est pas correctement placcé".
+func padLogPaneBody(body string, vpHeight int) string {
+	if vpHeight <= 1 {
+		return body
+	}
+	out := body
+	for i := 1; i < vpHeight; i++ {
+		out += "\n"
+	}
+	return out
 }
 
 // renderTabStrip draws the row of bordered tab boxes (Logs /
@@ -254,6 +286,21 @@ func (p logPane) renderTabStrip(theme Theme, width int) string {
 	//   top   : ╭──────╭──────────╭───────────╮
 	//   label : │ Logs │ Terminal │ Bookmarks │
 	//   rule  :─└──────┴──────────┴───────────┘──────────
+	// Browser-tab semantics : the ACTIVE tab's bottom edge stays
+	// open (rule line shows spaces under it) so it visually merges
+	// with the body content below ; inactive tabs have a closed
+	// bottom (rule line `───`) that reads as the tab's own frame.
+	// Without this, dragging the horizontal divider during an
+	// inactive tab made the whole rule line shift with the pane
+	// while Logs (default active) looked anchored — operator-
+	// reported 2026-06-24.
+	activeIdx := -1
+	for i, t := range logPaneTabs {
+		if t.ID == p.activeTab {
+			activeIdx = i
+			break
+		}
+	}
 	var top, rule strings.Builder
 	var styledLabel strings.Builder
 	for c := 0; c < leadIndent; c++ {
@@ -262,27 +309,39 @@ func (p logPane) renderTabStrip(theme Theme, width int) string {
 		rule.WriteRune('─')
 	}
 	for i, t := range logPaneTabs {
-		// Left edge of THIS tab. Always rounded (`╭`) on top + `│`
-		// on label. Bottom : `└` for the first tab, `┴` for
-		// subsequent ones (T-junction at the shared boundary).
+		isActive := i == activeIdx
+		prevActive := i > 0 && i-1 == activeIdx
+		// Left corner of THIS tab.
 		top.WriteRune('╭')
 		styledLabel.WriteString(theme.Faint.Render("│"))
-		if i == 0 {
+		switch {
+		case isActive && i == 0:
+			rule.WriteRune('┘') // rule terminates here from the left
+		case isActive:
+			rule.WriteRune('┘') // rule comes from previous inactive, ends
+		case prevActive:
+			rule.WriteRune('└') // rule resumes after the active tab
+		case i == 0:
 			rule.WriteRune('└')
-		} else {
+		default:
 			rule.WriteRune('┴')
 		}
-		// Inner area.
+		// Inner area : top always `─` ; bottom either `─` (inactive)
+		// or space (active, "open" bottom — body shows through).
 		for k := 0; k < innerW[i]; k++ {
 			top.WriteRune('─')
-			rule.WriteRune('─')
+			if isActive {
+				rule.WriteRune(' ')
+			} else {
+				rule.WriteRune('─')
+			}
 		}
 		// Label content.
 		raw := " " + t.Label + " "
 		for len(raw) < innerW[i] {
 			raw += " "
 		}
-		if t.ID == p.activeTab {
+		if isActive {
 			styledLabel.WriteString(theme.LogTabActive.UnsetBorderStyle().UnsetPadding().Render(raw))
 		} else {
 			styledLabel.WriteString(theme.LogTabInactive.UnsetBorderStyle().UnsetPadding().Render(raw))
@@ -291,7 +350,13 @@ func (p logPane) renderTabStrip(theme Theme, width int) string {
 	// Final right edge of the LAST tab.
 	top.WriteRune('╮')
 	styledLabel.WriteString(theme.Faint.Render("│"))
-	rule.WriteRune('┘')
+	// Rule's final corner depends on whether the last tab is active.
+	lastActive := activeIdx == len(logPaneTabs)-1
+	if lastActive {
+		rule.WriteRune('└') // rule resumes to the right of the active last tab
+	} else {
+		rule.WriteRune('┘') // close on the inactive last tab
+	}
 	// Trailing `─` on the rule line so it reaches the pane edge.
 	currentLen := lipgloss.Width(rule.String())
 	for currentLen < width {
@@ -352,6 +417,8 @@ func (p *logPane) switchTab(id string) {
 //   + 1 (LogPaneBox bottom border)
 // Centralised so bodyHeight() can subtract it cleanly.
 func (p logPane) height() int {
+	// 1 (top border = divider) + 3 (strip top+label+rule) + vp +
+	// 1 (bottom border) = vp + 5.
 	return p.vp.Height + 5
 }
 

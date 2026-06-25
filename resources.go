@@ -82,6 +82,15 @@ type ResourceListModel struct {
 	err     error
 	refresh time.Time
 
+	// sortCol is the index of the column the table is currently
+	// sorted on ; -1 = no explicit sort (preserve server order).
+	// sortAsc reverses to descending when false. Keys: `<` cycles
+	// the active column (prev), `>` cycles next, `Shift+S` toggles
+	// direction. 2026-06-24 operator directive : sort par clic
+	// sur la flèche du header.
+	sortCol int
+	sortAsc bool
+
 	// confirmAction is the pending action when its Confirm field is
 	// non-empty ; renders a one-line prompt the operator types into.
 	confirmAction string
@@ -99,6 +108,30 @@ type ResourceListModel struct {
 	// create is the form model when the operator pressed `n` to
 	// start a new entry. nil = no create flow in progress.
 	create *createFormModel
+
+	// relatedHosts resolves a detail row to the host records
+	// logically attached to it. Used by AZ + Rack detail drawers
+	// to surface their child Hosts under the row's properties.
+	relatedHosts func(resourceID string, row map[string]any) []relatedHost
+
+	// relatedProjects resolves a detail row to the projects
+	// logically attached to it (used by Tenant detail drawer).
+	relatedProjects func(resourceID string, row map[string]any) []relatedProject
+}
+
+// relatedHost is the small view of a Host the AZ + Rack detail
+// drawers display under their properties. The fields match the
+// `weft host ls` columns most operators look at when scoping a VM
+// placement.
+type relatedHost struct {
+	Hostname, AZ, Rack, Hypervisor, State string
+}
+
+// relatedProject is the small view of a Project the Tenant detail
+// drawer displays under tenant properties. Mirrors the
+// `weft project ls` columns.
+type relatedProject struct {
+	Name, UUID string
 }
 
 // newResourceListModel builds a fresh model for a registered resource.
@@ -109,14 +142,23 @@ func newResourceListModel(theme Theme, client weftv1.WeftAgentClient, cfg Resour
 		table.WithHeight(15),
 	)
 	s := table.DefaultStyles()
+	// Padding(0, 0) : see hosts.go newHostsModel for the rationale.
 	s.Header = s.Header.
+		Padding(0, 0).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
+	s.Cell = s.Cell.Padding(0, 0)
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
-	return &ResourceListModel{theme: theme, client: client, cfg: cfg, table: tbl, loading: true}
+	return &ResourceListModel{
+		theme: theme, client: client, cfg: cfg, table: tbl, loading: true,
+		// Default sort = first column ascending. Operator
+		// directive 2026-06-24 : "il y'a forcement un ordre de
+		// tri par defaut, la fleche doit le refleter".
+		sortCol: 0, sortAsc: true,
+	}
 }
 
 // Init triggers the initial list.
@@ -150,30 +192,145 @@ type resourceActionMsg struct {
 	err    error
 }
 
-// applyRows refreshes the in-memory rows + the table.
+// applyRows refreshes the in-memory rows + the table. Applies the
+// active sort key (m.sortCol / m.sortAsc) before pushing rows to
+// the table, and decorates the column headers with `↑`/`↓` arrows
+// so the operator sees which column drives the order.
 func (m *ResourceListModel) applyRows(rows []map[string]any) {
 	m.rows = rows
-	tableRows := make([]table.Row, 0, len(rows))
-	for _, r := range rows {
-		tableRows = append(tableRows, m.cfg.RowToCells(r))
-	}
-	m.table.SetRows(tableRows)
+	m.applyRowsToTable()
 	m.loading = false
 	m.err = nil
 	m.refresh = time.Now()
 }
 
+// applyRowsToTable performs the sort + table.SetRows. Pulled out
+// so the sort handlers can re-trigger without re-fetching the data.
+func (m *ResourceListModel) applyRowsToTable() {
+	sorted := m.sortedRows()
+	tableRows := make([]table.Row, 0, len(sorted))
+	for _, r := range sorted {
+		tableRows = append(tableRows, m.cfg.RowToCells(r))
+	}
+	m.table.SetRows(tableRows)
+	m.table.SetColumns(m.columnsWithSortArrow())
+}
+
+// sortedRows returns m.rows sorted by the active column, ascending
+// or descending. When sortCol is out of range or sentinel -1, the
+// rows are returned unchanged (server order preserved).
+func (m *ResourceListModel) sortedRows() []map[string]any {
+	if m.sortCol < 0 || m.sortCol >= len(m.cfg.Columns) {
+		return m.rows
+	}
+	out := make([]map[string]any, len(m.rows))
+	copy(out, m.rows)
+	sort.SliceStable(out, func(i, j int) bool {
+		a := m.cfg.RowToCells(out[i])[m.sortCol]
+		b := m.cfg.RowToCells(out[j])[m.sortCol]
+		if m.sortAsc {
+			return a < b
+		}
+		return a > b
+	})
+	return out
+}
+
+// columnsWithSortArrow returns a copy of the table's CURRENT
+// columns (already rescaled by applyResize to span bodyInnerWidth)
+// with ONLY the active sort column's title suffixed by ` ↑` /
+// ` ↓`. Inactive columns stay clean — operator directive
+// 2026-06-24. Reading from m.table.Columns() preserves the
+// proportional widths the responsive rescale assigned ; using
+// cfg.Columns (original widths) would shrink the table back to
+// its compact form and truncate UUID columns unnecessarily.
+func (m *ResourceListModel) columnsWithSortArrow() []table.Column {
+	cur := m.table.Columns()
+	if len(cur) == 0 {
+		cur = m.cfg.Columns
+	}
+	out := make([]table.Column, len(cur))
+	for i, c := range cur {
+		out[i] = c
+		// Restore the ORIGINAL title (strip any prior arrow) so
+		// re-applying doesn't accumulate ` ↑` suffixes across
+		// re-renders.
+		if i < len(m.cfg.Columns) {
+			out[i].Title = m.cfg.Columns[i].Title
+		}
+		if i == m.sortCol {
+			arrow := " ↑"
+			if !m.sortAsc {
+				arrow = " ↓"
+			}
+			out[i].Title = out[i].Title + arrow
+		}
+	}
+	return out
+}
+
+// cycleSort moves the active sort column by delta (+1 / -1) ;
+// wraps. Triggered by `>` / `<` keys.
+func (m *ResourceListModel) cycleSort(delta int) {
+	if len(m.cfg.Columns) == 0 {
+		return
+	}
+	if m.sortCol < 0 {
+		m.sortCol = 0
+		m.sortAsc = true
+	} else {
+		m.sortCol = (m.sortCol + delta + len(m.cfg.Columns)) % len(m.cfg.Columns)
+	}
+	m.applyRowsToTable()
+}
+
+// toggleSortDir flips ascending ↔ descending on the active column.
+func (m *ResourceListModel) toggleSortDir() {
+	if m.sortCol < 0 {
+		m.sortCol = 0
+	}
+	m.sortAsc = !m.sortAsc
+	m.applyRowsToTable()
+}
+
+// columnAtX maps an X offset (relative to the body's left edge, =
+// click.X - sidebarWidth) to a column index. Returns -1 when X
+// falls past the last column. Reads from m.table.Columns() (the
+// LIVE rescaled widths) so clicks past the original cfg widths
+// still hit the right column when the table got widened by
+// applyResize — operator-reported 2026-06-24 "ton resize n'aurait
+// pas decalé quelque chose ?".
+func (m *ResourceListModel) columnAtX(x int) int {
+	if x < 0 {
+		return -1
+	}
+	cur := m.table.Columns()
+	if len(cur) == 0 {
+		cur = m.cfg.Columns
+	}
+	cumX := 0
+	for i, c := range cur {
+		if x >= cumX && x < cumX+c.Width {
+			return i
+		}
+		cumX += c.Width
+	}
+	return -1
+}
+
 // selected returns the row under the cursor, or nil when the table
-// is empty.
+// is empty. Honours the active sort so the cursor index maps back
+// to the right row in the SORTED order.
 func (m *ResourceListModel) selected() map[string]any {
 	if len(m.rows) == 0 {
 		return nil
 	}
 	idx := m.table.Cursor()
-	if idx < 0 || idx >= len(m.rows) {
+	sorted := m.sortedRows()
+	if idx < 0 || idx >= len(sorted) {
 		return nil
 	}
-	return m.rows[idx]
+	return sorted[idx]
 }
 
 // Update handles keypresses + resource-loaded messages.
@@ -319,6 +476,21 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 		if key == "r" {
 			return m, m.loadCmd()
 		}
+		// Sort cycling : `>` next column, `<` prev column, `S`
+		// flips ascending/descending. Operator directive
+		// 2026-06-24.
+		if key == ">" {
+			m.cycleSort(+1)
+			return m, nil
+		}
+		if key == "<" {
+			m.cycleSort(-1)
+			return m, nil
+		}
+		if key == "S" {
+			m.toggleSortDir()
+			return m, nil
+		}
 		if key == "n" && m.cfg.CreateFn != nil {
 			m.create = newCreateFormModel(m.cfg)
 			return m, nil
@@ -385,8 +557,9 @@ func (m *ResourceListModel) confirmActionExpected() string {
 // overlay (when active).
 func (m *ResourceListModel) View(width int) string {
 	var b strings.Builder
-	b.WriteString(m.theme.Title.Render(m.cfg.Title))
-	b.WriteString("\n")
+	// Title header dropped 2026-06-23 : the sidebar already shows
+	// which view is active (▸ <Label>) so the panel title was
+	// redundant. Interface uniformized across tabs.
 	if m.loading {
 		b.WriteString(m.theme.Faint.Render("loading…"))
 		return b.String()
@@ -444,6 +617,45 @@ func (m *ResourceListModel) renderDetail(width int) string {
 		b.WriteString("  ")
 		b.WriteString(m.theme.StatusVal.Render(fmt.Sprintf("%v", v)))
 		b.WriteString("\n")
+	}
+	// Related hosts section : AZ + Rack drawers list the hosts
+	// attached to this row (the AZ → Rack → Host hierarchy made
+	// flesh). Skipped silently for resources without a relatedHosts
+	// callback wired or when the lookup returns nothing.
+	if m.relatedHosts != nil {
+		hosts := m.relatedHosts(m.cfg.ID, m.detailRow)
+		if len(hosts) > 0 {
+			b.WriteString("\n")
+			b.WriteString(m.theme.Title.Render(fmt.Sprintf("Hosts (%d)", len(hosts))))
+			b.WriteString("\n")
+			for _, h := range hosts {
+				line := fmt.Sprintf("  %-20s  %-8s  %-8s  %-6s  %s",
+					h.Hostname, dashEmpty(h.AZ), dashEmpty(h.Rack),
+					dashEmpty(h.Hypervisor), dashEmpty(h.State))
+				b.WriteString(m.theme.StatusVal.Render(line))
+				b.WriteString("\n")
+			}
+		}
+	}
+	// Related projects section : Tenant detail drawer lists the
+	// projects attached to this tenant. Mirrors the AZ/Rack→Hosts
+	// pattern.
+	if m.relatedProjects != nil {
+		projects := m.relatedProjects(m.cfg.ID, m.detailRow)
+		if len(projects) > 0 {
+			b.WriteString("\n")
+			b.WriteString(m.theme.Title.Render(fmt.Sprintf("Projects (%d)", len(projects))))
+			b.WriteString("\n")
+			for _, p := range projects {
+				uuidShort := p.UUID
+				if len(uuidShort) > 8 {
+					uuidShort = uuidShort[:8]
+				}
+				line := fmt.Sprintf("  %-24s  %s", p.Name, uuidShort)
+				b.WriteString(m.theme.StatusVal.Render(line))
+				b.WriteString("\n")
+			}
+		}
 	}
 	b.WriteString("\n")
 	b.WriteString(m.theme.Faint.Render("press Esc or q to close"))

@@ -53,8 +53,10 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "subnets", Title: "Subnets", Section: "Network",
 		Columns: []table.Column{
-			{Title: "NAME", Width: 18}, {Title: "CIDR", Width: 18},
-			{Title: "NETWORK", Width: 18}, {Title: "PROJECT", Width: 18},
+			{Title: "NAME", Width: 16},
+			{Title: "CIDR", Width: 18},
+			{Title: "NETWORK_UUID", Width: 36},
+			{Title: "PROJECT_UUID", Width: 36},
 		},
 		List:       listSubnets,
 		RowToCells: func(r map[string]any) []string {
@@ -206,8 +208,10 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "floating-ips", Title: "Floating IPs", Section: "Network",
 		Columns: []table.Column{
-			{Title: "ADDRESS", Width: 18}, {Title: "NETWORK", Width: 18},
-			{Title: "MAPPED-TO", Width: 22}, {Title: "PROJECT", Width: 18},
+			{Title: "ADDRESS", Width: 16},
+			{Title: "NETWORK_UUID", Width: 36},
+			{Title: "MAPPED-TO", Width: 22},
+			{Title: "PROJECT_UUID", Width: 36},
 		},
 		List:       listFloatingIPs,
 		RowToCells: func(r map[string]any) []string {
@@ -478,12 +482,16 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "tenants", Title: "Tenants", Section: "Identity",
 		Columns: []table.Column{
-			{Title: "NAME", Width: 22}, {Title: "DOMAIN", Width: 22},
-			{Title: "STATUS", Width: 12}, {Title: "ADMINS", Width: 8}, {Title: "MEMBERS", Width: 8},
+			{Title: "NAME", Width: 20},
+			{Title: "DOMAIN", Width: 22},
+			{Title: "STATUS", Width: 10},
+			{Title: "ADMINS", Width: 7},
+			{Title: "MEMBERS", Width: 8},
+			{Title: "VMS", Width: 6},
 		},
-		List:       listTenants,
+		List: listTenants,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "name"), s(r, "domain"), s(r, "status"), iStr(r["admins_count"]), iStr(r["members_count"])}
+			return []string{s(r, "name"), s(r, "domain"), s(r, "status"), iStr(r["admins_count"]), iStr(r["members_count"]), iStr(r["vms_count"])}
 		},
 		Actions: []ResourceAction{
 			{Key: "d", Label: "delete", Confirm: "yes", Do: deleteByUUID(func(ctx context.Context, c weftv1.WeftAgentClient, uuid string) error {
@@ -558,12 +566,23 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "flavors", Title: "Flavors", Section: "Compute",
 		Columns: []table.Column{
-			{Title: "NAME", Width: 18}, {Title: "VCPU", Width: 6},
-			{Title: "RAM-GIB", Width: 8}, {Title: "GPU", Width: 16},
+			{Title: "NAME", Width: 18},
+			{Title: "VCPU", Width: 6},
+			{Title: "RAM-GIB", Width: 8},
+			{Title: "GPU", Width: 16},
+			{Title: "VMS", Width: 5},
+			{Title: "UUID", Width: 36},
 		},
-		List:       listFlavors,
+		List: listFlavors,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "name"), iStr(r["vcpu"]), iStr(r["ram_gib"]), s(r, "gpu")}
+			return []string{
+				s(r, "name"),
+				iStr(r["vcpu"]),
+				iStr(r["ram_gib"]),
+				s(r, "gpu"),
+				iStr(r["vm_count"]),
+				s(r, "uuid"),
+			}
 		},
 		// Flavors mutate via SetFlavor / DeleteFlavor — they're
 		// cluster-admin only and rare ; the TUI surfaces read-only.
@@ -624,15 +643,24 @@ var resourceCatalogue = []ResourceConfig{
 	{
 		ID: "racks", Title: "Racks", Section: "Admin",
 		Columns: []table.Column{
-			{Title: "CODE", Width: 10},
-			{Title: "AZ", Width: 8},
+			{Title: "NAME", Width: 14},
+			{Title: "AZ_NAME", Width: 16},
 			{Title: "STATUS", Width: 10},
-			{Title: "HOSTS", Width: 8},
+			{Title: "HOSTS", Width: 6},
+			{Title: "UUID", Width: 36},
 			{Title: "AZ_UUID", Width: 36},
 		},
 		List: listRacks,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "code"), s(r, "az_code"), s(r, "status"), iStr(r["position"]), s(r, "az_uuid")}
+			// NAME = "<az_code>:<rack_code>" so racks named r1 in
+			// different AZs stay distinguishable at a glance.
+			// AZ_NAME = the AZ's human-friendly display name (e.g.
+			// "DC 1" vs code "dc1"). Operator directive 2026-06-24.
+			name := s(r, "code")
+			if az := s(r, "az_code"); az != "" {
+				name = az + ":" + name
+			}
+			return []string{name, s(r, "az_name"), s(r, "status"), iStr(r["position"]), s(r, "uuid"), s(r, "az_uuid")}
 		},
 		Actions: []ResourceAction{
 			{Key: "a", Label: "activate", Do: setRackStatus("active")},

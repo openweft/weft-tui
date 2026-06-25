@@ -124,6 +124,10 @@ func (f *fakeClient) SetVMStatus(_ context.Context, _ *weftv1.SetVMStatusRequest
 	return &weftv1.SetVMStatusResponse{}, nil
 }
 
+func (f *fakeClient) ListFlavors(_ context.Context, _ *weftv1.ListFlavorsRequest, _ ...grpc.CallOption) (*weftv1.ListFlavorsResponse, error) {
+	return &weftv1.ListFlavorsResponse{}, nil
+}
+
 func (f *fakeClient) VMLogs(_ context.Context, in *weftv1.VMLogsRequest, _ ...grpc.CallOption) (*weftv1.VMLogsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -352,13 +356,13 @@ func TestRemoveConfirmFlow(t *testing.T) {
 	m := New(client)
 	m.hosts.applyHosts(client.listHostsResp)
 
-	next, cmd := m.Update(keyMsg('x'))
+	next, cmd := m.Update(keyMsg('o'))
 	m = next.(Model)
 	if cmd != nil {
-		t.Errorf("'x' must not issue an RPC ; got Cmd %v", cmd)
+		t.Errorf("'o' must not issue an RPC ; got Cmd %v", cmd)
 	}
 	if !m.ConfirmingRemove() {
-		t.Fatalf("'x' should open the confirm modal")
+		t.Fatalf("'o' should open the confirm modal")
 	}
 
 	next, _ = m.Update(keyMsg('n'))
@@ -370,7 +374,7 @@ func TestRemoveConfirmFlow(t *testing.T) {
 		t.Errorf("DeleteHost must not be called on cancel")
 	}
 
-	next, _ = m.Update(keyMsg('x'))
+	next, _ = m.Update(keyMsg('o'))
 	m = next.(Model)
 	_, cmd = m.Update(keyMsg('y'))
 	if cmd == nil {
@@ -425,7 +429,7 @@ func vmsModelWithSeed(t *testing.T, c *fakeClient, vm *weftv1.VMInfo) Model {
 	m := New(c)
 	next, _ := m.Update(keyMsg('2'))
 	m = next.(Model)
-	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject, m.flavorLookup)
 	return m
 }
 
@@ -533,7 +537,7 @@ func TestVMsHostColumnResolvesHostname(t *testing.T) {
 	m = next.(Model)
 
 	// VMs land first ; HOST column should fall back to short UUID.
-	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject)
+	m.vms.applyVMs(c.listVMsResp, m.hosts.placementByUUID, m.projects.tenantNameForProject, m.flavorLookup)
 	if got := m.vms.rows[0].HostName; got != "" {
 		t.Errorf("HostName before hosts arrive = %q, want empty", got)
 	}
@@ -1058,9 +1062,10 @@ func TestHosts_CPMarker(t *testing.T) {
 		if row[0] != want {
 			t.Errorf("row[%d=%s].CP = %q, want %q", i, r.UUID, row[0], want)
 		}
-		// STATE column index 8 (after CP, UUID, HOSTNAME, AZ, RACK,
-		// CPU, RAM, GPU).
-		state := row[8]
+		// STATE column index 7 (CP, UUID, HOSTNAME, RACK, CPU,
+		// RAM, GPU). AZ + RACK merged into a single column
+		// 2026-06-24.
+		state := row[7]
 		if strings.ContainsAny(state, "\x1b") {
 			t.Errorf("row[%d].STATE contains ANSI escape : %q (should be plain text)", i, state)
 		}
@@ -1070,7 +1075,7 @@ func TestHosts_CPMarker(t *testing.T) {
 		if r.Cordoned && !strings.Contains(state, "cordoned") {
 			t.Errorf("row[%d].STATE missing 'cordoned' suffix : %q", i, state)
 		}
-		// CONN column index 9.
+		// CONN column index 9 (STATE 7 + STATUS 8 + CONN 9).
 		conn := row[9]
 		if strings.ContainsAny(conn, "\x1b") {
 			t.Errorf("row[%d].CONN contains ANSI escape : %q", i, conn)

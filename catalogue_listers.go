@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	weftv1 "github.com/openweft/weft-proto"
 )
@@ -206,6 +208,26 @@ func listTenants(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]an
 	if err != nil {
 		return nil, err
 	}
+	// Side-load projects + VMs to compute the per-tenant VM total
+	// (sum across the tenant's projects). 2026-06-24 operator
+	// directive : "dans la vue tenant ca serait bien d'avoir une
+	// colonne avec la sommes des VMS de tous les projets du
+	// tenant". Best-effort : on either side-load error, the column
+	// stays blank (0) — the tenant list still renders.
+	vmsByProject := map[string]int{}
+	if vmResp, vErr := c.ListVMs(ctx, &weftv1.ListVMsRequest{}); vErr == nil {
+		for _, v := range vmResp.Vms {
+			if v.ProjectUuid != "" {
+				vmsByProject[v.ProjectUuid]++
+			}
+		}
+	}
+	projectsByTenant := map[string]int{}
+	if pResp, pErr := c.ListProjects(ctx, &weftv1.ListProjectsRequest{}); pErr == nil {
+		for _, p := range pResp.Projects {
+			projectsByTenant[p.TenantUuid] += vmsByProject[p.Uuid]
+		}
+	}
 	out := make([]map[string]any, 0, len(resp.Tenants))
 	for _, t := range resp.Tenants {
 		out = append(out, map[string]any{
@@ -213,6 +235,7 @@ func listTenants(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]an
 			"status":        t.Status,
 			"admins_count":  t.Admins,
 			"members_count": t.Members,
+			"vms_count":     projectsByTenant[t.Uuid],
 		})
 	}
 	return out, nil
@@ -251,18 +274,127 @@ func listSSHKeyCatalogue(ctx context.Context, c weftv1.WeftAgentClient) ([]map[s
 	return out, nil
 }
 
+// flavorShape is the (vcpu, ram_gib) tuple synthFlavors dedupes
+// against.
+type flavorShape struct {
+	vcpu int
+	gib  int
+}
+
+// ramToGiB parses a Flavor.ram string ("4Gi", "256Mi", raw number
+// = MB) into integer GiB. Returns 0 on parse failure — the caller
+// then treats the shape as "no RAM specified" for matching.
+func ramToGiB(s string) int {
+	if s == "" {
+		return 0
+	}
+	// "Xgi" / "Xgib" / "XG"
+	low := strings.ToLower(s)
+	switch {
+	case strings.HasSuffix(low, "gi") || strings.HasSuffix(low, "gib") || strings.HasSuffix(low, "g"):
+		n := strings.TrimRight(low, "gib")
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			return 0
+		}
+		return v
+	case strings.HasSuffix(low, "mi") || strings.HasSuffix(low, "mib") || strings.HasSuffix(low, "m"):
+		n := strings.TrimRight(low, "mib")
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			return 0
+		}
+		return v / 1024
+	}
+	// Bare digits = MB.
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return v / 1024
+}
+
+// synthFlavors derives "in-use" flavor entries from the running
+// VM set : groups VMs by (vcpu, ram_gib), counts how many VMs share
+// the shape, and emits one synthetic row per shape. Surfaces the
+// implicit catalogue even when the curated flavors registry is
+// empty — operator directive 2026-06-24 "si on a des VM qui
+// tournent, il y'a forcement des flavors". Best-effort : on
+// ListVMs error returns nil so listFlavors still renders the
+// registered shapes.
+func synthFlavors(ctx context.Context, c weftv1.WeftAgentClient, seenNames map[string]bool) []map[string]any {
+	vmResp, err := c.ListVMs(ctx, &weftv1.ListVMsRequest{})
+	if err != nil {
+		return nil
+	}
+	counts := map[flavorShape]int{}
+	for _, v := range vmResp.Vms {
+		gib := int(v.MemMb) / 1024
+		if gib == 0 && v.MemMb > 0 {
+			gib = 1
+		}
+		counts[flavorShape{vcpu: int(v.Cpu), gib: gib}]++
+	}
+	out := make([]map[string]any, 0, len(counts))
+	for shape, n := range counts {
+		if shape.vcpu == 0 && shape.gib == 0 {
+			continue
+		}
+		name := fmt.Sprintf("auto:%dcpu-%dgib", shape.vcpu, shape.gib)
+		if seenNames[name] {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name":      name,
+			"vcpu":      uint32(shape.vcpu),
+			"ram_gib":   uint64(shape.gib),
+			"gpu":       "", // no GPU info on auto-derived shapes
+			"vm_count":  n,
+			"synthetic": true,
+		})
+	}
+	return out
+}
+
 func listFlavors(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
 	resp, err := c.ListFlavors(ctx, &weftv1.ListFlavorsRequest{})
 	if err != nil {
 		return nil, err
 	}
+	// vmsByShape counts how many VMs match each (vcpu, ram_gib)
+	// tuple so the VMS column on registered flavors gets populated
+	// too — not just the auto-derived synthetic entries.
+	vmsByShape := map[flavorShape]int{}
+	if vmResp, vErr := c.ListVMs(ctx, &weftv1.ListVMsRequest{}); vErr == nil {
+		for _, v := range vmResp.Vms {
+			gib := int(v.MemMb) / 1024
+			if gib == 0 && v.MemMb > 0 {
+				gib = 1
+			}
+			vmsByShape[flavorShape{vcpu: int(v.Cpu), gib: gib}]++
+		}
+	}
 	out := make([]map[string]any, 0, len(resp.Flavors))
+	seen := map[string]bool{}
 	for _, f := range resp.Flavors {
+		seen[f.Name] = true
+		gib := int(0)
+		// Best-effort RAM parsing : "Xgi" or raw number = MB.
+		if v := f.Ram; v != "" {
+			gib = ramToGiB(v)
+		}
 		out = append(out, map[string]any{
-			"name": f.Name, "vcpu": f.Vcpu, "ram_gib": f.Ram,
-			"gpu": f.Gpu,
+			"uuid":     f.Uuid,
+			"name":     f.Name,
+			"vcpu":     f.Vcpu,
+			"ram_gib":  f.Ram,
+			"gpu":      f.Gpu,
+			"vm_count": vmsByShape[flavorShape{vcpu: int(f.Vcpu), gib: gib}],
 		})
 	}
+	// Append synthetic "in-use" shapes derived from running VMs so
+	// the panel never reads as empty when the cluster has VMs.
+	out = append(out, synthFlavors(ctx, c, seen)...)
 	return out, nil
 }
 
@@ -292,10 +424,12 @@ func listRacks(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any,
 	// l'uuid est déterministe mais le nom est plus humain").
 	// Best-effort : on ListAZs error we just leave az_code empty,
 	// the column falls through to the raw uuid.
-	azByUUID := map[string]string{}
+	azCodeByUUID := map[string]string{}
+	azNameByUUID := map[string]string{}
 	if azResp, azErr := c.ListAZs(ctx, &weftv1.ListAZsRequest{}); azErr == nil {
 		for _, a := range azResp.Azs {
-			azByUUID[a.Uuid] = a.Code
+			azCodeByUUID[a.Uuid] = a.Code
+			azNameByUUID[a.Uuid] = a.Name
 		}
 	}
 	out := make([]map[string]any, 0, len(resp.Racks))
@@ -304,7 +438,8 @@ func listRacks(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any,
 			"uuid":     r.Uuid,
 			"code":     r.Code,
 			"status":   r.Status,
-			"az_code":  azByUUID[r.AzUuid],
+			"az_code":  azCodeByUUID[r.AzUuid],
+			"az_name":  azNameByUUID[r.AzUuid],
 			"az_uuid":  r.AzUuid,
 			"position": r.Hosts, // re-uses the position column slot to show host count
 		})
