@@ -102,6 +102,34 @@ func main() {
 	// pages the table viewport ; the palette entries become click
 	// targets when open.
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Wire the ResilientClient's lifecycle events to the TUI status
+	// bar (instead of letting them scroll across the alt-screen via
+	// os.Stderr). Only meaningful for the resilient path ; the
+	// legacy single-socket flow never instantiates *ResilientClient.
+	//
+	// IMPORTANT : prog.Send blocks until the program's event loop is
+	// running (it pushes to an unbuffered channel that Run drains).
+	// Calling it before prog.Run() deadlocks the whole startup —
+	// nothing renders, the user sees a blank terminal + interprets
+	// it as "cannot connect". The seed-send is therefore deferred
+	// to a goroutine that fires after Run starts ; SetOnSwitch /
+	// SetOnEvent install the hooks synchronously so events that
+	// arrive once Run is up reach the model.
+	if rc, ok := client.(*ResilientClient); ok {
+		rc.SetOnSwitch(func(ep Endpoint) {
+			prog.Send(connSwitchMsg{active: ep})
+		})
+		rc.SetOnEvent(func(level, msg string) {
+			prog.Send(connEventMsg{level: level, msg: msg})
+		})
+		// Seed the initial endpoint into the status bar so the
+		// operator sees "● dc1" right away. Goroutine so Send
+		// doesn't block on prog.Run starting ; the message is
+		// safely queued once Run begins.
+		go func() {
+			prog.Send(connSwitchMsg{active: rc.Active()})
+		}()
+	}
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "weft-tui: %v\n", err)
 		os.Exit(1)

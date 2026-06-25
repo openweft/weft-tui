@@ -351,12 +351,12 @@ func formatActionHint(theme Theme, key, label string) string {
 // renderActionBar returns a 1-line faint-styled hint with the
 // keyboard shortcuts available on the active view. Empty string
 // when no actions apply (e.g. modal overlays). The bar is non-
-// clickable — keys / context menu (`m`) are the real input paths
+// clickable — keys / context menu (`a`) are the real input paths
 // — but it surfaces the verbs operators would otherwise have to
 // memorise. 2026-06-24 operator directive.
 func (m Model) renderActionBar(width int) string {
 	type hint struct{ key, label string }
-	// Single "Actions" button (opens the context menu via `m`) +
+	// Single "Actions" button (opens the context menu via `a`) +
 	// "refresh" (`r`). Operator directive 2026-06-24 : "mettre un
 	// bouton Actions qui ouvre le menu avec toutes les actions
 	// dedans plutot que de les repeter dans la tabbar. il faut
@@ -475,7 +475,7 @@ func (m *Model) switchToResource(id string) tea.Cmd {
 		// layout. The size handler above also iterates the map on
 		// every resize so subsequent terminal changes propagate.
 		if m.width > 0 {
-			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-1)
+			applyResize(&rm.table, cfg.Columns, m.bodyInnerWidth(), m.bodyHeight()-bodyDataRowOffset)
 		}
 		m.resource[id] = rm
 	}
@@ -517,7 +517,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// occupies its own horizontal slot, so the body width must
 		// exclude it. Match bodyHeight()/bodyWidth() so applyResize
 		// + renderBody agree on the viewport.
-		h := m.bodyHeight() - 1 // account for BodyBox border top+bottom
+		h := m.bodyHeight() - bodyDataRowOffset // body top border + action bar + sep + table header + header border
 		bw := m.bodyInnerWidth()
 		// Table widgets : resize BOTH height (to fill the viewport)
 		// AND column widths (proportionally to the declared widths
@@ -780,6 +780,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.events.err = msg.err
 		}
 		m.events.started = false
+		// Drop the pump so the lazy-restart guards (tab click,
+		// keypath, etc.) can re-arm a fresh stream. Otherwise the
+		// Events tab stays dead after a single network blip.
+		// Audit 2026-06-25.
+		m.eventsPump = nil
 		return m, nil
 	}
 
@@ -820,27 +825,6 @@ func (m Model) forwardToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
-	// --- Context menu : keyboard-triggered. ---
-	// "m" on a table row opens the per-row action menu. Keyboard
-	// is the PRIMARY trigger (terminals don't all forward
-	// Ctrl+Shift+Click reliably — many strip the modifiers, some
-	// fall back to right-click for paste). The mouse path in
-	// handleMouse remains as a bonus where it works.
-	// Operator directive 2026-06-24 : "Actions" button is bound to
-	// `a` (was `m`). Lowercase 'a' previously triggered direct
-	// Activate on VMs/AZ/Rack ; the menu intercept here now takes
-	// priority, so Activate is reached via the menu (which lists
-	// it explicitly).
-	if !m.menu.open && !m.palette.open && key == "a" {
-		items := m.buildContextMenu()
-		if len(items) > 0 {
-			m.menu.open = true
-			m.menu.items = items
-			m.menu.cursor = 0
-			return m, nil
-		}
-	}
-
 	// --- Context menu first : navigation captures everything. ---
 	if m.menu.open {
 		switch key {
@@ -867,9 +851,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, it.action
 			}
 		}
-		// Other keys fall through to the regular tab handlers so
-		// muscle-memory shortcuts (refresh, etc.) still work even
-		// with the menu open.
+		// Other keys are swallowed — preventing `q` from quitting
+		// the app while the menu is open, etc. The operator
+		// closes via Esc / Ctrl+C ; refresh stays accessible via
+		// the Refresh button (mouse) or after closing the menu.
+		// Audit 2026-06-25.
+		return m, nil
 	}
 
 	// --- Modals first : they capture every key until resolved. ---
@@ -967,9 +954,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Help overlay : ? toggles, anything else closes it.
+	// Help overlay : ? toggles, anything else closes it. Ctrl+C
+	// closes it too — operator habit ; without this it was
+	// silently swallowed (audit 2026-06-25).
 	if m.showHelp {
-		if key == "?" || key == "esc" || key == "q" {
+		if key == "?" || key == "esc" || key == "q" || key == "ctrl+c" {
 			m.showHelp = false
 		}
 		return m, nil
@@ -985,16 +974,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// --- Context menu : keyboard-triggered. ---
+	// "a" on a table row opens the per-row action menu. Keyboard
+	// is the PRIMARY trigger (terminals don't all forward
+	// Ctrl+Shift+Click reliably ; the mouse path in handleMouse
+	// remains as a bonus where it works). Sits AFTER all modal
+	// checks so typing `a` in a create-project form / confirm
+	// prompt isn't intercepted (audit 2026-06-25).
+	if !m.menu.open && !m.palette.open && key == "a" {
+		items := m.buildContextMenu()
+		if len(items) > 0 {
+			m.menu.open = true
+			m.menu.items = items
+			m.menu.cursor = 0
+			return m, nil
+		}
+	}
+
 	// --- Global keys. ---
 	switch key {
 	case "ctrl+b":
 		// Toggle the sidebar's collapsed (icon-only) mode. Useful
 		// on small terminals where the full catalogue + labels eat
 		// too much horizontal real estate. Mirrors VSCode's Ctrl+B
-		// muscle memory.
+		// muscle memory. Reset the scroll offset so a collapsed
+		// sidebar starts at the top — without this the collapsed
+		// view inherits a stale "↑ N more" indicator and the top
+		// icons stop being reachable. Audit 2026-06-25.
 		m.sidebarCollapsed = !m.sidebarCollapsed
+		m.sidebarOffset = 0
 		// Re-resize tables since bodyInnerWidth changed.
-		h := m.bodyHeight() - 1
+		h := m.bodyHeight() - bodyDataRowOffset
 		bw := m.bodyInnerWidth()
 		applyResize(&m.hosts.table, hostsColumns(), bw, h)
 		applyResize(&m.vms.table, vmsColumns(), bw, h)
@@ -1080,6 +1090,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// --- Tab-specific keys. ---
+	// Events shortcuts (p / c / G / g / j / k) also fire when the
+	// LOG-PANE tab is "events" so the operator doesn't have to
+	// switch to the legacy tabEvents body view. Audit 2026-06-25.
+	if m.logPane.activeTab == "events" && m.active != tabEvents {
+		switch key {
+		case "p", "c", "g", "G":
+			return m.handleEventsKey(msg, key)
+		}
+	}
 	switch m.active {
 	case tabHosts:
 		return m.handleHostsKey(msg, key)
@@ -1204,16 +1223,10 @@ func (m Model) handleVMsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 		m.vms.logsTitle = name
 		m.vms.logsVP.SetContent("")
 		return m, loadVMLogsCmd(m.client, name, project)
-	case "a":
-		// Activate : flip admin status to active. Orthogonal to
-		// runtime state — the VM may already be `running`.
-		uuid := m.vms.selectedUUID()
-		name, project := m.vms.selected()
-		if uuid == "" {
-			m.setError("no VM selected")
-			return m, nil
-		}
-		return m, setVMStatusCmd(m.client, uuid, name, project, "active")
+	// `a` (Activate) is intercepted by the global Actions-menu
+	// binding earlier in handleKey ; the case here used to fire
+	// directly but is now dead code. Activate is reached via the
+	// menu (item shortcut `a`). Audit 2026-06-25.
 	case "i":
 		// Inactivate : freeze the VM admin-side. Respawn skips,
 		// scheduler avoids ; runtime keeps going until operator
@@ -2185,23 +2198,27 @@ func (m Model) overlayContextMenu(base string) string {
 	if tbl != nil {
 		rowIdx = tbl.Cursor()
 	}
-	// Body region starts at terminal Y = topbarHeight() ; the table
-	// header consumes 2 rows (top border + header line), so the
-	// first data row sits at topbarHeight + 2.
+	// Body region starts at terminal Y = topbarHeight() ; the
+	// chrome above the first data row is bodyDataRowOffset (5)
+	// rows : body top border + action bar + separator + table
+	// header + header bottom border. The selected row therefore
+	// sits at topbarHeight + bodyDataRowOffset + rowIdx ; the menu
+	// anchors just below.
 	bodyTop := m.topbarHeight()
-	anchorY := bodyTop + 2 + rowIdx + 1 // just below the selected row
+	anchorY := bodyTop + bodyDataRowOffset + rowIdx + 1 // just below the selected row
 	menuHeight := len(menuLines)
 	bodyBottom := bodyTop + m.bodyHeight()
 	if anchorY+menuHeight > bodyBottom {
 		// Flip upward so the menu fits.
-		anchorY = bodyTop + 2 + rowIdx - menuHeight
+		anchorY = bodyTop + bodyDataRowOffset + rowIdx - menuHeight
 		if anchorY < bodyTop+1 {
 			anchorY = bodyTop + 1
 		}
 	}
-	// X anchor inside the body region. sidebarWidth + 4 puts the
-	// menu past the BodyBox border + 1 col of padding.
-	anchorX := m.sidebarWidth() + 4
+	// X anchor inside the body region. sidebarWidth + 1 puts the
+	// menu just past the sidebar's right border (BodyBox lost its
+	// left border + horizontal padding in 2026-06-24).
+	anchorX := m.sidebarWidth() + 1
 
 	for i, line := range menuLines {
 		y := anchorY + i
@@ -2674,6 +2691,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if inPane {
+			// Route wheel to the active log-pane tab's viewport
+			// (events vs logs). Audit 2026-06-25 : was always
+			// hitting logs.vp regardless of active tab.
+			if m.logPane.activeTab == "events" {
+				m.events.vp.LineUp(2)
+				m.events.userScrolled = true
+				return m, nil
+			}
 			m.logPane.vp.LineUp(2)
 			m.logPane.follow = false
 			return m, nil
@@ -2686,6 +2711,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if inPane {
+			if m.logPane.activeTab == "events" {
+				m.events.vp.LineDown(2)
+				if m.events.vp.AtBottom() {
+					m.events.userScrolled = false
+				}
+				return m, nil
+			}
 			m.logPane.vp.LineDown(2)
 			if m.logPane.vp.AtBottom() {
 				m.logPane.follow = true
@@ -2698,7 +2730,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Right-click context menu. macOS touchpad maps the two-
 		// finger tap to a right-click — the natural gesture for a
 		// context menu. Terminals that bind right-click to paste
-		// will conflict, but the keyboard `m` shortcut + the
+		// will conflict, but the keyboard `a` shortcut + the
 		// Ctrl+Shift+Left fallback below cover that case.
 		if msg.Action != tea.MouseActionRelease {
 			return m, nil
@@ -2707,7 +2739,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.menu.open = false
 			return m, nil
 		}
-		row := msg.Y - m.topbarHeight() - 2
+		row := msg.Y - m.topbarHeight() - bodyDataRowOffset
 		if row < 0 {
 			return m, nil
 		}
@@ -2788,7 +2820,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// relative to the pane's left edge (which begins at
 		// sidebarWidth()).
 		if inTabStrip && msg.Action == tea.MouseActionRelease && msg.X >= m.sidebarWidth() {
-			localX := msg.X - m.sidebarWidth() - 2 // -2 for LogPaneBox border+padding
+			// LogPaneBox lost its left border + horizontal padding
+			// 2026-06-24 — strip starts right at sidebarWidth, no
+			// offset to subtract. Audit 2026-06-25 : was `-2` which
+			// made the first tab unclickable.
+			localX := msg.X - m.sidebarWidth()
 			if id := m.logPane.tabHitX(localX); id != "" {
 				m.logPane.switchTab(id)
 				// Switching to "events" lazily opens the
@@ -2865,7 +2901,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				m.sidebarW = newW
 				// Re-resize tables to the new body width.
-				h := m.bodyHeight() - 1
+				h := m.bodyHeight() - bodyDataRowOffset
 				bw := m.bodyInnerWidth()
 				applyResize(&m.hosts.table, hostsColumns(), bw, h)
 				applyResize(&m.vms.table, vmsColumns(), bw, h)
@@ -2879,7 +2915,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				// New log pane top row = msg.Y (where the handle
 				// has been pulled). New log pane total height =
 				// terminal-Y of statusbar - msg.Y - 2.
-				bottomY := m.height - 2 // status bar starts here (incl. its top border)
+				// Status bar dropped its top border 2026-06-24 ;
+				// the bar is now a single line. Audit 2026-06-25.
+				bottomY := m.height - 1
 				newPaneHeight := bottomY - msg.Y
 				// newPaneHeight is the TOTAL log pane lines ; the
 				// viewport content height = total - chrome (5).
@@ -2887,7 +2925,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.logPaneH = newVPHeight
 				m.logPane.SetHeight(newVPHeight)
 				// Re-resize tables since bodyHeight changed.
-				h := m.bodyHeight() - 1
+				h := m.bodyHeight() - bodyDataRowOffset
 				bw := m.bodyInnerWidth()
 				applyResize(&m.hosts.table, hostsColumns(), bw, h)
 				applyResize(&m.vms.table, vmsColumns(), bw, h)
@@ -2940,11 +2978,17 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.menu.open = false
 			return m, nil
 		}
-		// Body click → table-row cursor move. The bubbles/table
-		// reserves 1 line for the header and 1 line at the top
-		// for the styled border ; the first data row sits at
-		// rendered row 2 (relative to the body region's top).
-		row := regionY - 2
+		// Body click → table-row cursor move. Chrome above the
+		// first data row (regionY = 0 is the body's top border) :
+		//   row 0  body top border
+		//   row 1  action bar
+		//   row 2  separator rule
+		//   row 3  table header
+		//   row 4  table header bottom border
+		//   row 5+ data rows
+		// So data row index = regionY - 5. (Audit 2026-06-25 :
+		// was `-2`, which targeted the wrong cell every click.)
+		row := regionY - bodyDataRowOffset
 		if row < 0 {
 			return m, nil
 		}
@@ -2953,6 +2997,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// bodyDataRowOffset is the number of chrome rows BodyBox renders
+// above the first table data row. Used by every mouse handler that
+// maps a click Y → table cursor index. Single source of truth so
+// future chrome changes (e.g. drop the action bar on a future
+// tab) update everywhere consistently.
+const bodyDataRowOffset = 5
 
 // activateTab switches the model to the requested tab + arms the
 // corresponding refresh Cmd so the table reflects current data

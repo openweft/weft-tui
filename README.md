@@ -42,7 +42,13 @@ go build -o weft-tui .
 | key | action |
 |---|---|
 | `1` … `4` | switch tab (Hosts / VMs / Projects / Events) |
+| `:` | open command palette (`:networks`, `:volumes`, …) |
+| `a` | open the per-row Actions context menu |
 | `r` | refresh active tab |
+| `Ctrl+B` | toggle sidebar collapsed / expanded |
+| `<` / `>` | cycle active sort column (catalogue views) |
+| `S` | flip ascending ↔ descending on the active sort column |
+| `T` | cycle colour theme |
 | `?` | help overlay |
 | `q` / Ctrl+C | quit |
 
@@ -54,7 +60,7 @@ go build -o weft-tui .
 | `c` | cordon selected host |
 | `u` | uncordon selected host |
 | `d` | set-state down (drain prep before remove) |
-| `x` | remove selected host (with confirm) |
+| `o` | remove selected host (with confirm) |
 
 ### VMs tab
 
@@ -63,7 +69,9 @@ go build -o weft-tui .
 | ↑/↓ or j/k | move selection |
 | `s` | start selected VM |
 | `S` | stop selected VM (with confirm) |
-| `R` | restart (stop → start, sequential) |
+| `R` | restart selected VM (atomic RPC, rolls back on failure) |
+| `a` | activate VM (admin status → active) — also opens the Actions menu |
+| `i` | inactivate VM (admin status → inactive ; runtime keeps going) |
 | `l` | open serial log viewer (tail ~200 lines) |
 | Esc | close log viewer / cancel confirm |
 

@@ -10,9 +10,10 @@ import "github.com/charmbracelet/lipgloss"
 // at process start (NewTheme) ; never mutated.
 type Theme struct {
 	Title      lipgloss.Style
-	Tab        lipgloss.Style
-	ActiveTab  lipgloss.Style
-	StatusBar  lipgloss.Style
+	// Tab + ActiveTab dead since the top-of-screen tabs header
+	// was replaced by the sidebar (catalogue navigation now in
+	// the left rail). Kept removed per audit 2026-06-25.
+	StatusBar lipgloss.Style
 	StatusKey  lipgloss.Style
 	StatusVal  lipgloss.Style
 	StatusMsg  lipgloss.Style
@@ -80,14 +81,6 @@ func NewTheme() Theme {
 			Bold(true).
 			Foreground(primary).
 			Padding(0, 1),
-		Tab: lipgloss.NewStyle().
-			Foreground(muted).
-			Padding(0, 2),
-		ActiveTab: lipgloss.NewStyle().
-			Bold(true).
-			Foreground(primary).
-			Underline(true).
-			Padding(0, 2),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(muted).
 			Padding(0, 1),

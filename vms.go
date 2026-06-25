@@ -364,7 +364,11 @@ func azBadge(theme Theme, az string) string {
 	if az == "" {
 		return "—"
 	}
-	return azColor(az).Render("● ") + az
+	// Plain text only — bubbles/table's truncator cuts ANSI mid-
+	// sequence on narrow widths (AZ column is width 5 with a
+	// 4-col floor, so truncation is the norm not the exception).
+	// Audit 2026-06-25.
+	return "● " + az
 }
 
 // azColor returns one of a small palette keyed by FNV-1a hash of the

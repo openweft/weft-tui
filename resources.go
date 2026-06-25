@@ -647,11 +647,10 @@ func (m *ResourceListModel) renderDetail(width int) string {
 			b.WriteString(m.theme.Title.Render(fmt.Sprintf("Projects (%d)", len(projects))))
 			b.WriteString("\n")
 			for _, p := range projects {
-				uuidShort := p.UUID
-				if len(uuidShort) > 8 {
-					uuidShort = uuidShort[:8]
-				}
-				line := fmt.Sprintf("  %-24s  %s", p.Name, uuidShort)
+				// Full UUID — every catalogue view shows the 36-char
+				// form since 2026-06-24. Audit 2026-06-25 removed
+				// the [:8] truncation here for consistency.
+				line := fmt.Sprintf("  %-24s  %-36s", p.Name, p.UUID)
 				b.WriteString(m.theme.StatusVal.Render(line))
 				b.WriteString("\n")
 			}
