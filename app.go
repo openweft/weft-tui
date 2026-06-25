@@ -2186,13 +2186,21 @@ func (m Model) renderBody() string {
 			continue
 		}
 		if selPrefix != "" && strings.HasPrefix(line, selPrefix) {
-			// The bubbles/table row is only sum(col widths) chars
-			// wide ; rescaleColumns reserves tableSidePadding=4
-			// for the table widget's own chrome, so the row is
-			// 4 chars short of the body's table area. Measure the
-			// rendered line and fill the trailing gap with the
-			// selection background so the highlight spans
-			// edge-to-edge.
+			// bubbles/table renders the selection-styled row +
+			// closing reset, then APPENDS unstyled spaces after
+			// the reset to pad the row to SetWidth. Those tail
+			// spaces fall outside the selection background and
+			// leave a visible gap before our right fill. Fold
+			// them back inside the reset so the bg covers the
+			// whole row, then add the remaining fill to the
+			// body's frame.
+			const reset = "\x1b[0m"
+			if idx := strings.LastIndex(line, reset); idx >= 0 {
+				head, tail := line[:idx], line[idx+len(reset):]
+				if tail != "" && strings.TrimLeft(tail, " ") == "" {
+					line = head + tail + reset
+				}
+			}
 			lineW := lipgloss.Width(line)
 			rightFill := inner - bodyContentPadding - lineW
 			if rightFill < 0 {
