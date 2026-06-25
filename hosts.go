@@ -377,14 +377,14 @@ func humanAge(t time.Time) string {
 func hostsColumns() []table.Column {
 	return []table.Column{
 		{Title: "CP", Width: 3},
-		{Title: "UUID", Width: 8},
+		{Title: "UUID", Width: 36},
 		{Title: "HOSTNAME", Width: 20},
-		{Title: "AZ", Width: 6},
-		{Title: "RACK", Width: 6},
+		{Title: "RACK", Width: 10},
 		{Title: "CPU", Width: 5},
 		{Title: "RAM", Width: 9},
 		{Title: "GPU", Width: 12},
-		{Title: "STATE", Width: 14},
+		{Title: "STATE", Width: 10},
+		{Title: "STATUS", Width: 10},
 		{Title: "CONN", Width: 8},
 		{Title: "VMS", Width: 5},
 		{Title: "VERSION", Width: 10},
@@ -401,11 +401,19 @@ func newHostsModel(theme Theme) hostsModel {
 		table.WithHeight(15),
 	)
 	s := table.DefaultStyles()
+	// Padding(0, 0) on Header AND Cell : the default Padding(0, 1)
+	// stretches every rendered cell by 2 extra cols, which made the
+	// header line + its BorderBottom overflow the body box on
+	// narrow (≤120 col) terminals + wrap onto a second line.
+	// rescaleColumns assumes this zero-padding so the cell widths
+	// sum to the rendered row width exactly.
 	s.Header = s.Header.
+		Padding(0, 0).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"}).
 		BorderBottom(true).
 		Bold(true)
+	s.Cell = s.Cell.Padding(0, 0)
 	s.Selected = theme.SelectedRow
 	tbl.SetStyles(s)
 	return hostsModel{theme: theme, table: tbl, loading: true}
@@ -578,6 +586,17 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	if strings.EqualFold(h.State, "down") {
 		state = theme.BadgeBad.Render("✖ " + stateText)
 	}
+	// STATUS column = admin intent, derived from the State enum
+	// today : HostStateInactive is the operator-marked "frozen"
+	// signal that survives heartbeats (see hostRegistry.heartbeat).
+	// Anything else reads as "active" administratively — the actual
+	// runtime liveness is still visible in the STATE + CONN columns.
+	// Matches the VM Status column's UX so the two views read the
+	// same axis the same way (2026-06-24 operator directive).
+	statusText := "active"
+	if strings.EqualFold(h.State, "inactive") {
+		statusText = "inactive"
+	}
 	conn := "no"
 	if h.Connected {
 		conn = "yes"
@@ -586,10 +605,10 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	if !h.LastSeen.IsZero() {
 		last = h.LastSeen.Format("2006-01-02 15:04:05")
 	}
-	uuidShort := h.UUID
-	if len(uuidShort) > 8 {
-		uuidShort = uuidShort[:8]
-	}
+	// Full UUID — symmetric with the other catalogue views
+	// (Racks, AZs, Tenants…). Was 8 chars to fit a dense table ;
+	// the column got widened to 36 in 2026-06-24.
+	uuidFull := dashEmpty(h.UUID)
 	cp := "—"
 	if _, ok := controlPlaneUUIDs[h.UUID]; ok {
 		cp = "*"
@@ -605,16 +624,25 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	// redundant. Hypervisor is still in the detail drawer for
 	// hosts that registered before the driver-versions feature
 	// (DriverVersions empty, Hypervisor non-empty).
+	// RACK column = "<AZ>:<RACK>" matching the Racks view ;
+	// homonym racks across DCs stay distinguishable at a glance.
+	// Operator directive 2026-06-24.
+	rackLabel := dashEmpty(h.Rack)
+	if h.Rack != "" && h.AZ != "" {
+		rackLabel = h.AZ + ":" + h.Rack
+	} else if h.AZ != "" && h.Rack == "" {
+		rackLabel = h.AZ + ":—"
+	}
 	return table.Row{
 		cp,
-		uuidShort,
+		uuidFull,
 		dashEmpty(h.Hostname),
-		dashEmpty(h.AZ),
-		dashEmpty(h.Rack),
+		rackLabel,
 		cpu,
 		ram,
 		gpu,
 		state,
+		statusText,
 		conn,
 		vms,
 		ver,

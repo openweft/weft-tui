@@ -58,12 +58,11 @@ func TestLogPane_AppendRendersInViewport(t *testing.T) {
 // would either overlap or leave a gap.
 func TestLogPane_HeightAccountsForBorder(t *testing.T) {
 	p := newLogPane(80)
-	// 2 outer LogPaneBox border + 2 tab strip (top border + label)
-	// + 1 stitched rule (combines tab bottoms + pane separator)
-	// = 5 lines of chrome.
+	// 2 LogPaneBox borders (top+bottom) + 3 tab strip lines = 5
+	// lines of chrome.
 	want := logPaneDefaultHeight + 5
 	if p.height() != want {
-		t.Fatalf("logPane.height() = %d ; want %d (content + 5 chrome)", p.height(), want)
+		t.Fatalf("logPane.height() = %d ; want %d (content + 4 chrome)", p.height(), want)
 	}
 }
 
