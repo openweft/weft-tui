@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -50,6 +51,11 @@ type projectsModel struct {
 	rows    []projectRow
 	loading bool
 	err     error
+	// sortCol / sortAsc : uniform click-to-sort UX with hostsModel
+	// / vmsModel / ResourceListModel. Default = first column,
+	// ascending. Audit follow-up 2026-06-25.
+	sortCol int
+	sortAsc bool
 
 	// tenantNames is the tenantUUID → tenantName map populated by
 	// the same load cycle that fetches projects (see loadTenantsCmd).
@@ -105,7 +111,73 @@ func newProjectsModel(theme Theme) projectsModel {
 	in.CharLimit = 64
 	in.Width = 40
 
-	return projectsModel{theme: theme, table: tbl, input: in, loading: true}
+	return projectsModel{theme: theme, table: tbl, input: in, loading: true, sortCol: 0, sortAsc: true}
+}
+
+// columnsWithSortArrow / columnAtX / applySort — same uniform
+// click-to-sort contract as hostsModel + vmsModel + ResourceList-
+// Model. Audit follow-up 2026-06-25.
+func (m *projectsModel) columnsWithSortArrow() []table.Column {
+	cur := m.table.Columns()
+	src := projectsColumns()
+	if len(cur) == 0 {
+		cur = src
+	}
+	out := make([]table.Column, len(cur))
+	for i, c := range cur {
+		out[i] = c
+		if i < len(src) {
+			out[i].Title = src[i].Title
+		}
+		if i == m.sortCol {
+			arrow := " ↑"
+			if !m.sortAsc {
+				arrow = " ↓"
+			}
+			out[i].Title = out[i].Title + arrow
+		}
+	}
+	return out
+}
+
+func (m *projectsModel) columnAtX(x int) int {
+	if x < 0 {
+		return -1
+	}
+	cur := m.table.Columns()
+	if len(cur) == 0 {
+		cur = projectsColumns()
+	}
+	cumX := 0
+	for i, c := range cur {
+		if x >= cumX && x < cumX+c.Width {
+			return i
+		}
+		cumX += c.Width
+	}
+	return -1
+}
+
+func (m *projectsModel) applySort() {
+	if m.sortCol >= 0 {
+		sort.SliceStable(m.rows, func(i, j int) bool {
+			a := m.rows[i].tableRow(m.tenantNames)
+			b := m.rows[j].tableRow(m.tenantNames)
+			if m.sortCol >= len(a) || m.sortCol >= len(b) {
+				return false
+			}
+			if m.sortAsc {
+				return stripANSI(a[m.sortCol]) < stripANSI(b[m.sortCol])
+			}
+			return stripANSI(a[m.sortCol]) > stripANSI(b[m.sortCol])
+		})
+	}
+	tableRows := make([]table.Row, 0, len(m.rows))
+	for _, r := range m.rows {
+		tableRows = append(tableRows, r.tableRow(m.tenantNames))
+	}
+	m.table.SetRows(tableRows)
+	m.table.SetColumns(m.columnsWithSortArrow())
 }
 
 func (m *projectsModel) selected() (uuid, name string) {
@@ -128,7 +200,6 @@ func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts 
 		m.tenantNames = tenants
 	}
 	rows := make([]projectRow, 0, len(resp.Projects))
-	tableRows := make([]table.Row, 0, len(resp.Projects))
 	// Keep prior counts when the caller passed nil.
 	prior := make(map[string]int, len(m.rows))
 	for _, r := range m.rows {
@@ -155,10 +226,9 @@ func (m *projectsModel) applyProjects(resp *weftv1.ListProjectsResponse, counts 
 			}
 		}
 		rows = append(rows, r)
-		tableRows = append(tableRows, r.tableRow(m.tenantNames))
 	}
 	m.rows = rows
-	m.table.SetRows(tableRows)
+	m.applySort()
 	m.loading = false
 	m.err = nil
 	m.lastRefresh = time.Now()
