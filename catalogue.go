@@ -137,6 +137,13 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "shares", Title: "Shares", Section: "Storage",
+		// Shared filesystem volumes are served by the CubeFS plugin
+		// (catalogue id "cubefs") in openweft's reference stack ;
+		// other backends would re-claim this entry by name once they
+		// register their own catalogue plugin. Sidebar gate hides
+		// the entry until cubefs is installed — see [feedback_no_minio]
+		// for the openweft storage-backend policy.
+		RequiresPlugin: "cubefs",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 20}, {Title: "BACKEND", Width: 10},
 			{Title: "SIZE-GB", Width: 10}, {Title: "PROJECT", Width: 18}, {Title: "STATUS", Width: 12},
@@ -177,6 +184,10 @@ var resourceCatalogue = []ResourceConfig{
 		// now listCollections returns no rows and the table renders
 		// empty — discoverable from the sidebar without erroring out.
 		ID: "collections", Title: "Collections", Section: "Storage",
+		// Gate on the iRODS HA plugin. Operators see this entry only
+		// when at least one weft-ha-irods instance is installed in
+		// the cluster.
+		RequiresPlugin: "weft-ha-irods",
 		Columns: []table.Column{
 			{Title: "PATH", Width: 40}, {Title: "OWNER", Width: 16},
 			{Title: "ZONE", Width: 14}, {Title: "OBJECTS", Width: 10},
@@ -192,6 +203,10 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "buckets", Title: "Buckets", Section: "Storage",
+		// S3-compatible bucket backend in openweft = CubeFS objectnode
+		// (cf. [feedback_no_minio]). Gated like Shares — same plugin
+		// hosts both surfaces.
+		RequiresPlugin: "cubefs",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 22}, {Title: "ENDPOINT", Width: 32},
 			{Title: "REGION", Width: 14}, {Title: "PROJECT", Width: 18},
@@ -749,6 +764,38 @@ var resourceCatalogue = []ResourceConfig{
 		List:       listInstalledPlugins,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "version"), s(r, "state"), s(r, "project_uuid")}
+		},
+		Actions: []ResourceAction{
+			{
+				Key:     "i",
+				Label:   "install",
+				Confirm: "yes",
+				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+					name := s(row, "name")
+					if name == "" {
+						return "", fmt.Errorf("row has no plugin name")
+					}
+					if s(row, "state") != "available" {
+						return "", fmt.Errorf("plugin %q is already installed (state=%s)", name, s(row, "state"))
+					}
+					// Project resolution : V1 installs into the default
+					// project. The catalogue entry may declare required
+					// inputs but the TUI doesn't surface a per-input
+					// form here yet — the agent's defaults cover the
+					// happy path for irods-ha / cubefs / weft-webui.
+					// CreateFields-driven prompting comes with the
+					// CreateFn flow when the gating UX expands beyond
+					// this Action.
+					resp, err := c.InstallPlugin(ctx, &weftv1.InstallPluginRequest{Name: name})
+					if err != nil {
+						return "", err
+					}
+					if resp.InstanceUuid == "" {
+						return "installed " + name + " (no instance uuid returned)", nil
+					}
+					return "installed " + name + " (instance=" + resp.InstanceUuid + ")", nil
+				},
+			},
 		},
 	},
 	{

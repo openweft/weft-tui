@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	weftv1 "github.com/openweft/weft-proto"
 )
 
@@ -476,20 +478,96 @@ func listImages(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any
 	return out, nil
 }
 
-func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
-	resp, err := c.ListInstalledPlugins(ctx, &weftv1.ListInstalledPluginsRequest{})
-	if err != nil {
-		return nil, err
+// installedPluginsMsg is the response payload of loadInstalledPluginsCmd.
+// names is the set of plugin catalogue names that have at least one
+// instance with a non-empty status — that's the gate the sidebar
+// RequiresPlugin filter consults. err non-nil means we don't know yet
+// and the Model leaves installedPlugins unchanged (the sidebar stays
+// permissive until the next tick clarifies).
+type installedPluginsMsg struct {
+	names map[string]bool
+	err   error
+}
+
+// loadInstalledPluginsCmd runs ListInstalledPlugins, returns the set
+// of catalogue names that have running instances. Used by the
+// sidebar gate on RequiresPlugin ; re-armed by refreshTickMsg so a
+// freshly-installed plugin lights up its sidebar entries within one
+// refresh interval. Takes the narrow PluginsClient so tests can
+// inject a fake without satisfying the full WeftAgent surface.
+func loadInstalledPluginsCmd(client PluginsClient) tea.Cmd {
+	if client == nil {
+		return func() tea.Msg {
+			return installedPluginsMsg{err: errNoClient}
+		}
 	}
-	out := make([]map[string]any, 0, len(resp.Instances))
-	for _, p := range resp.Instances {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := client.ListInstalledPlugins(ctx, &weftv1.ListInstalledPluginsRequest{})
+		if err != nil {
+			return installedPluginsMsg{err: err}
+		}
+		names := make(map[string]bool, len(resp.Instances))
+		for _, p := range resp.Instances {
+			if p.Name != "" {
+				names[p.Name] = true
+			}
+		}
+		return installedPluginsMsg{names: names}
+	}
+}
+
+// listInstalledPlugins merges the catalogue (all available plugins
+// the agent knows about) with the currently-installed instances so
+// the Plugins view shows BOTH "installed" and "available" rows.
+// Operators install from the same view (key `i`), which the user
+// expects per the 2026-06-26 directive : "irods est a declarer comme
+// plugin dans Installed plugins avec la possibilité de l'installer".
+//
+// Identity : (catalogue.name, instance.project) tuple — multiple
+// projects can each install the same catalogue entry independently.
+// Rows whose project is empty represent "available, not yet
+// installed in any project".
+func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
+	catResp, catErr := c.ListPluginCatalogue(ctx, &weftv1.ListPluginCatalogueRequest{})
+	instResp, instErr := c.ListInstalledPlugins(ctx, &weftv1.ListInstalledPluginsRequest{})
+	// Tolerate ListPluginCatalogue failing : at minimum show what's
+	// already running. Tolerate ListInstalledPlugins failing : at
+	// minimum show what's available. Both failing surfaces the
+	// installed-list error since that's the one operators came for.
+	if instErr != nil {
+		return nil, instErr
+	}
+	installed := map[string]bool{}
+	out := make([]map[string]any, 0)
+	for _, p := range instResp.Instances {
+		state := p.Status
+		if state == "" {
+			state = "installed"
+		}
 		out = append(out, map[string]any{
 			"uuid":         p.InstanceUuid,
 			"name":         p.Name,
-			"version":      "", // PluginInstance has no per-install version on the wire
-			"state":        p.Status,
+			"version":      "",
+			"state":        state,
 			"project_uuid": p.Project,
 		})
+		installed[p.Name] = true
+	}
+	if catErr == nil {
+		for _, e := range catResp.Entries {
+			if installed[e.Name] {
+				continue
+			}
+			out = append(out, map[string]any{
+				"uuid":         "",
+				"name":         e.Name,
+				"version":      e.Version,
+				"state":        "available",
+				"project_uuid": "",
+			})
+		}
 	}
 	return out, nil
 }

@@ -67,6 +67,14 @@ type Client interface {
 	ProjectsClient
 	EventsClient
 	FlavorsClient
+	PluginsClient
+}
+
+// PluginsClient is the narrow surface the sidebar's RequiresPlugin
+// gate consumes. Implemented by weftv1.WeftAgentClient ; mock-friendly
+// for tests that don't need the full agent.
+type PluginsClient interface {
+	ListInstalledPlugins(ctx context.Context, in *weftv1.ListInstalledPluginsRequest, opts ...grpc.CallOption) (*weftv1.ListInstalledPluginsResponse, error)
 }
 
 // FlavorsClient is the narrow ListFlavors surface needed to fill
@@ -167,6 +175,15 @@ type Model struct {
 	// metrics front. Owned for the lifetime of the Model.
 	metricsBus *hostMetricsBus
 
+	// installedPlugins is the set of catalogue-plugin names that have
+	// at least one running instance in the cluster. Refreshed on the
+	// same tick as the active-tab data ; nil = "RPC not yet returned"
+	// → gates default to permissive (every sidebar entry visible) so
+	// the TUI stays usable while the first probe runs. Once the RPC
+	// answers, RequiresPlugin gates kick in and entries whose backend
+	// isn't installed drop out of the sidebar.
+	installedPlugins map[string]bool
+
 	// identity is the connection identity rendered in the topbar's
 	// right side : "user@host" for an SSH endpoint, "local" for a
 	// Unix-socket endpoint. Updated by connSwitchMsg whenever the
@@ -263,6 +280,10 @@ func (m Model) Init() tea.Cmd {
 		// render shows bare project names until the projects tab
 		// is visited or the periodic ticker fires.
 		loadProjectsCmd(m.client),
+		// Initial plugin probe so the sidebar's RequiresPlugin gates
+		// resolve to their steady state on the first render after
+		// the RPC answers. Re-armed by refreshTickMsg.
+		loadInstalledPluginsCmd(m.client),
 		tickRefresh(),
 		// Pump host-metrics samples into the Update loop. Re-armed
 		// after each delivery (see metricsSampleMsg handler) so the
@@ -647,7 +668,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshTickMsg:
 		// Re-arm the ticker + refresh whichever tab is active.
-		cmds := []tea.Cmd{tickRefresh()}
+		cmds := []tea.Cmd{
+			tickRefresh(),
+			// Refresh the installed-plugin set on every tick so a
+			// freshly-installed plugin's sidebar entries appear
+			// within one refresh interval (and uninstall hides them
+			// just as quickly).
+			loadInstalledPluginsCmd(m.client),
+		}
 		switch m.active {
 		case tabHosts:
 			cmds = append(cmds, loadHostsCmd(m.client))
@@ -662,6 +690,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Events stream is self-driven ; nothing to do here.
 		}
 		return m, tea.Batch(cmds...)
+
+	case installedPluginsMsg:
+		// Drop silently on error so a transient ListInstalledPlugins
+		// failure doesn't blank the sidebar — the prior map stays in
+		// effect until the next tick clarifies.
+		if msg.err == nil {
+			m.installedPlugins = msg.names
+		}
+		return m, nil
 
 	case hostsLoadedMsg:
 		if msg.err != nil {
@@ -1696,7 +1733,7 @@ func reorderEntries(in []ResourceConfig, section string) []ResourceConfig {
 // title within each group). Sections list section.* of the
 // catalogue in the same order operators expect : Network, Storage,
 // Compute, Identity, Admin.
-func sidebarSections() []sidebarSection {
+func (m Model) sidebarSections() []sidebarSection {
 	sections := []sidebarSection{{
 		Header:  "Core",
 		Entries: coreEntries(),
@@ -1708,10 +1745,17 @@ func sidebarSections() []sidebarSection {
 	if len(sections) == 1 && len(sections[0].Entries) == 0 {
 		sections = nil
 	}
-	// Group the catalogue by Section.
+	// Group the catalogue by Section. Drops entries whose
+	// RequiresPlugin gate isn't satisfied : nil installedPlugins
+	// (RPC not yet returned) means "permissive" so the sidebar
+	// reads correctly during the first second after launch, then
+	// the gate kicks in once we know which plugins are installed.
 	groups := map[string][]ResourceConfig{}
 	order := []string{}
 	for _, r := range resourceCatalogue {
+		if r.RequiresPlugin != "" && m.installedPlugins != nil && !m.installedPlugins[r.RequiresPlugin] {
+			continue
+		}
 		if _, seen := groups[r.Section]; !seen {
 			order = append(order, r.Section)
 		}
@@ -1838,7 +1882,7 @@ func (m Model) renderSidebar() string {
 	// into a slice of lines first, then slice by sidebarOffset
 	// before passing it to lipgloss.
 	allLines := make([]string, 0, 40)
-	for _, sec := range sidebarSections() {
+	for _, sec := range m.sidebarSections() {
 		if m.sidebarCollapsed {
 			allLines = append(allLines, "")
 		} else {
@@ -2751,7 +2795,7 @@ func (m Model) sidebarHitRows() map[int]sidebarEntry {
 	rendered := m.renderSidebar()
 	lines := strings.Split(rendered, "\n")
 	out := make(map[int]sidebarEntry, 32)
-	for _, sec := range sidebarSections() {
+	for _, sec := range m.sidebarSections() {
 		for _, e := range sec.Entries {
 			// "more" rows (palette / help) have non-targetable
 			// shortcuts ; skip them so a click doesn't no-op

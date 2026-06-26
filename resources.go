@@ -59,6 +59,15 @@ type ResourceConfig struct {
 	// wired yet).
 	EditFields []FormField
 	EditFn     EditFn
+	// RequiresPlugin gates the sidebar entry on the named plugin
+	// being installed (cf. ListInstalledPlugins). Empty means
+	// unconditionally visible — that's the default. Non-empty means
+	// the entry is filtered out of the sidebar until at least one
+	// instance of the named plugin reports a non-empty status.
+	// Used to surface backend-specific UX only when its backend is
+	// deployed : Collections under "weft-ha-irods", Shares + Buckets
+	// under "cubefs", etc.
+	RequiresPlugin string
 }
 
 // ResourceAction is one operator-triggered command (delete, rename,
