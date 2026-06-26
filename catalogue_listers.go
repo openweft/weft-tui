@@ -462,17 +462,60 @@ func listRacks(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any,
 	return out, nil
 }
 
+// knownInfraImages is the seed list of OCI references the cluster
+// pulls on bring-up : the microVM kernel + pod-initrd plus the core
+// infra services (etcd / NATS / DNS / OIDC / OCI registry / web UI).
+// Sourced from [project_infra_images_forked] + [project_weft_up_gaps]
+// + the agent's zombiegc audit on the live cluster. Tag pinning is
+// kept light — the ":latest" suffix is what the catalogue actually
+// pulls today ; pinned tags will replace these when the supply-chain
+// story tightens.
+//
+// listImages overlays this set onto the agent's local OCI cache so
+// operators see both "cached" (already pulled, ready to boot a VM)
+// and "available" (seedable from GHCR via the `p` pull action). Same
+// merging pattern as the Plugins view's catalogue + installed merge.
+var knownInfraImages = []struct {
+	URL  string
+	Role string // human-readable hint shown in the NAME column when uncached
+}{
+	{"ghcr.io/openweft/weft-microvm-kernel:latest", "microvm-kernel"},
+	{"ghcr.io/openweft/weft-microvm-pod-initrd:latest", "microvm-pod-initrd"},
+	{"ghcr.io/openweft/weft-etcd:latest", "infra-etcd"},
+	{"ghcr.io/openweft/weft-nats:latest", "infra-nats"},
+	{"ghcr.io/openweft/weft-dex:latest", "infra-dex"},
+	{"ghcr.io/openweft/weft-zot:latest", "infra-zot"},
+	{"ghcr.io/openweft/weft-coredns:latest", "infra-coredns"},
+	{"ghcr.io/openweft/weft-webui:latest", "infra-webui"},
+}
+
 func listImages(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
 	resp, err := c.ListImages(ctx, &weftv1.ListImagesRequest{})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]map[string]any, 0, len(resp.Images))
+	out := make([]map[string]any, 0, len(resp.Images)+len(knownInfraImages))
+	cached := map[string]bool{}
 	for _, img := range resp.Images {
 		out = append(out, map[string]any{
 			"url": img.Url, "name": img.Name,
 			"format":     img.Format,
 			"size_bytes": img.SizeBytes,
+			"state":      "cached",
+		})
+		cached[img.Url] = true
+	}
+	// Append the infra images that aren't yet in the local cache so
+	// operators can pull them on demand from the same view.
+	for _, ki := range knownInfraImages {
+		if cached[ki.URL] {
+			continue
+		}
+		out = append(out, map[string]any{
+			"url": ki.URL, "name": ki.Role,
+			"format":     "oci",
+			"size_bytes": int64(0),
+			"state":      "available",
 		})
 	}
 	return out, nil

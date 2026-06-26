@@ -754,17 +754,44 @@ var resourceCatalogue = []ResourceConfig{
 		},
 	},
 	{
+		// Images = OCI image catalogue, both cached locally and the
+		// known infra seeds (kernel + pod-initrd + etcd/NATS/DNS/OIDC/
+		// zot/webui). "available" rows can be pulled on demand via
+		// the `p` action ; "cached" rows are already on disk and
+		// boot-ready. Same merge-then-tag pattern as Plugins.
 		ID: "images", Title: "Images", Section: "Storage",
 		Columns: []table.Column{
-			{Title: "URL", Width: 50}, {Title: "FORMAT", Width: 10}, {Title: "SIZE", Width: 12},
+			{Title: "URL", Width: 50}, {Title: "NAME", Width: 24},
+			{Title: "FORMAT", Width: 8}, {Title: "STATE", Width: 10},
+			{Title: "SIZE", Width: 12},
 		},
-		List:       listImages,
+		List: listImages,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "url"), s(r, "format"), iStr(r["size_bytes"])}
+			return []string{s(r, "url"), s(r, "name"), s(r, "format"), s(r, "state"), iStr(r["size_bytes"])}
+		},
+		Actions: []ResourceAction{
+			{
+				Key:     "p",
+				Label:   "pull",
+				Confirm: "yes",
+				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+					url := s(row, "url")
+					if url == "" {
+						return "", fmt.Errorf("row has no url")
+					}
+					if s(row, "state") == "cached" {
+						return "", fmt.Errorf("image %q is already cached", url)
+					}
+					if _, err := c.PullImage(ctx, &weftv1.PullImageRequest{Url: url}); err != nil {
+						return "", err
+					}
+					return "pulled " + url, nil
+				},
+			},
 		},
 	},
 	{
-		ID: "plugins", Title: "Installed Plugins", Section: "Admin",
+		ID: "plugins", Title: "Plugins", Section: "Admin",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 22}, {Title: "VERSION", Width: 14},
 			{Title: "STATE", Width: 12}, {Title: "PROJECT", Width: 18},
