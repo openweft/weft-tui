@@ -126,6 +126,15 @@ type hostsModel struct {
 	detailUUID string
 
 	lastRefresh time.Time
+
+	// metricsRing is a lookup injected by the top-level Model so the
+	// detail drawer can read the host's CPU/MEM/Net rolling buffer
+	// (filled by hostMetricsBus from NATS). Returns nil when no
+	// samples have arrived yet — renderHostMetricsBlock handles
+	// that. Function-typed instead of an embedded *hostMetricsBus so
+	// hosts.go stays free of NATS imports + the dependency points
+	// in one direction only (app.go → hosts.go).
+	metricsRing func(uuid string) *hostMetricsRing
 }
 
 // selectedRow returns the currently-highlighted hostsRow + true, or
@@ -264,6 +273,20 @@ func (m *hostsModel) detailView(width int) string {
 			b.WriteString("  ")
 			b.WriteString(formatMount(mt))
 			b.WriteString("\n")
+		}
+	}
+	// Append the metrics block (4 sparklines : CPU, MEM, Net rx,
+	// Net tx) when the NATS bus has received at least one sample
+	// for this host. The block is rendered with a max sparkline
+	// width of (width - 40) so the label + live value columns stay
+	// readable on narrow terminals. Empty string = no samples yet.
+	if m.metricsRing != nil {
+		w := width - 40
+		if w < 16 {
+			w = 16
+		}
+		if block := renderHostMetricsBlock(m.theme, m.metricsRing(r.UUID), w); block != "" {
+			b.WriteString(block)
 		}
 	}
 	b.WriteString("\n")
