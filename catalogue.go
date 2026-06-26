@@ -103,6 +103,12 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "volumes", Title: "Volumes", Section: "Storage",
+		// Block-volume backend in openweft = weft-block (fork-and-
+		// adapt of longhorn-engine, cf. [project_weft_block]). Gate
+		// the sidebar entry on its catalogue plugin so operators
+		// see Volumes only after the storage backend is deployed —
+		// same UX as Collections / Shares / Buckets.
+		RequiresPlugin: "weft-block",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 20}, {Title: "SIZE-GIB", Width: 10},
 			{Title: "FORMAT", Width: 10}, {Title: "PROJECT", Width: 18}, {Title: "ATTACHED", Width: 18},
@@ -185,9 +191,11 @@ var resourceCatalogue = []ResourceConfig{
 		// empty — discoverable from the sidebar without erroring out.
 		ID: "collections", Title: "Collections", Section: "Storage",
 		// Gate on the iRODS HA plugin. Operators see this entry only
-		// when at least one weft-ha-irods instance is installed in
-		// the cluster.
-		RequiresPlugin: "weft-ha-irods",
+		// when at least one `irods-ha` instance is installed in the
+		// cluster (catalogue name is `irods-ha` — the binary inside
+		// is weft-ha-irods, but the catalogue entry is the shorter
+		// form per catalogue/irods-ha/plugin.hcl).
+		RequiresPlugin: "irods-ha",
 		Columns: []table.Column{
 			{Title: "PATH", Width: 40}, {Title: "OWNER", Width: 16},
 			{Title: "ZONE", Width: 14}, {Title: "OBJECTS", Width: 10},
@@ -800,6 +808,8 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "volume-snapshots", Title: "Volume Snapshots", Section: "Storage",
+		// Volume snapshots only matter once the block backend exists.
+		RequiresPlugin: "weft-block",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 24}, {Title: "VOLUME", Width: 22},
 			{Title: "SIZE-GIB", Width: 10}, {Title: "PROJECT", Width: 18},
@@ -817,6 +827,9 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "volume-backups", Title: "Volume Backups", Section: "Storage",
+		// Same gate as volumes / volume-snapshots — without the block
+		// backend there's nothing to back up.
+		RequiresPlugin: "weft-block",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 24}, {Title: "VOLUME", Width: 22},
 			{Title: "SIZE-GIB", Width: 10}, {Title: "STATUS", Width: 12},
