@@ -205,6 +205,15 @@ func (f *fakeClient) WatchEvents(_ context.Context, _ *weftv1.WatchEventsRequest
 	return &fakeEventStream{}, nil
 }
 
+// ListInstalledPlugins satisfies PluginsClient on the test fake.
+// The TUI sidebar gate calls this on every refresh tick ; tests
+// don't exercise gating directly, so the default returns the empty
+// set (all RequiresPlugin entries hide). Tests that need them
+// visible can extend this fake.
+func (f *fakeClient) ListInstalledPlugins(_ context.Context, _ *weftv1.ListInstalledPluginsRequest, _ ...grpc.CallOption) (*weftv1.ListInstalledPluginsResponse, error) {
+	return &weftv1.ListInstalledPluginsResponse{}, nil
+}
+
 // keyMsg builds a tea.KeyMsg for the given rune. Bubble Tea's API has
 // no public constructor that matches the `Update` callsite contract,
 // so we hand-craft the struct. Runes only — modifiers go through the

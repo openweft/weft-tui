@@ -196,7 +196,7 @@ func TestFormatDriverVersions_StableOrder(t *testing.T) {
 // the resourceCatalogue iteration would shrink the sidebar to the
 // 4 core tabs alone.
 func TestSidebarSections_NonEmpty(t *testing.T) {
-	secs := sidebarSections()
+	secs := Model{}.sidebarSections()
 	if len(secs) < 2 {
 		t.Fatalf("expected at least 2 sections ; got %d", len(secs))
 	}
