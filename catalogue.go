@@ -813,9 +813,8 @@ var resourceCatalogue = []ResourceConfig{
 		},
 		Actions: []ResourceAction{
 			{
-				Key:     "i",
-				Label:   "install",
-				Confirm: "yes",
+				Key:   "i",
+				Label: "install",
 				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
 					name := s(row, "name")
 					if name == "" {
@@ -824,17 +823,21 @@ var resourceCatalogue = []ResourceConfig{
 					if s(row, "state") != "available" {
 						return "", fmt.Errorf("plugin %q is already installed (state=%s)", name, s(row, "state"))
 					}
-					// Project resolution : V1 installs into the default
-					// project. The catalogue entry may declare required
-					// inputs but the TUI doesn't surface a per-input
-					// form here yet — the agent's defaults cover the
-					// happy path for irods-ha / cubefs / weft-webui.
-					// CreateFields-driven prompting comes with the
-					// CreateFn flow when the gating UX expands beyond
-					// this Action.
-					resp, err := c.InstallPlugin(ctx, &weftv1.InstallPluginRequest{Name: name})
+					// Project resolution V1 : default to "infra" — that's
+					// where every HA plugin in the openweft reference
+					// stack lands (postgres-ha, irods-ha, redis-ha, …).
+					// Per-plugin input prompting is a follow-up : the
+					// catalogue HCL declares required inputs but the
+					// TUI doesn't surface a form here yet. The agent
+					// returns a clear error (codes.InvalidArgument :
+					// "input X is required") when a mandatory input
+					// is missing — the status bar shows it verbatim.
+					resp, err := c.InstallPlugin(ctx, &weftv1.InstallPluginRequest{
+						Name:    name,
+						Project: "infra",
+					})
 					if err != nil {
-						return "", err
+						return "", fmt.Errorf("InstallPlugin %s: %w", name, err)
 					}
 					if resp.InstanceUuid == "" {
 						return "installed " + name + " (no instance uuid returned)", nil
