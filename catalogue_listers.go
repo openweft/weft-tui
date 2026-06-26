@@ -76,6 +76,19 @@ func listShares(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any
 	return out, nil
 }
 
+// listCollections lists iRODS collections (directory-equivalents in
+// the iRODS data grid). The weft-ha-irods plugin is the storage
+// backend ; it exposes a REST/NATS surface the agent will eventually
+// proxy via a weftv1.ListCollections RPC. Until that RPC lands the
+// lister returns no rows — the catalogue entry stays visible in the
+// Storage section so operators can discover it ; the empty table
+// signals "iRODS plugin not wired yet" without erroring out.
+func listCollections(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
+	_ = ctx
+	_ = c
+	return nil, nil
+}
+
 func listBuckets(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
 	resp, err := c.ListBuckets(ctx, &weftv1.ListBucketsRequest{})
 	if err != nil {

@@ -170,6 +170,27 @@ var resourceCatalogue = []ResourceConfig{
 		},
 	},
 	{
+		// Collections = iRODS collection paths (the iRODS equivalent
+		// of directories : group DataObjects + sub-collections under
+		// a logical path like /tempZone/home/alice/data). Listed via
+		// the weft-ha-irods plugin once its proxy RPC ships ; for
+		// now listCollections returns no rows and the table renders
+		// empty — discoverable from the sidebar without erroring out.
+		ID: "collections", Title: "Collections", Section: "Storage",
+		Columns: []table.Column{
+			{Title: "PATH", Width: 40}, {Title: "OWNER", Width: 16},
+			{Title: "ZONE", Width: 14}, {Title: "OBJECTS", Width: 10},
+			{Title: "CREATED", Width: 20},
+		},
+		List: listCollections,
+		RowToCells: func(r map[string]any) []string {
+			return []string{s(r, "path"), s(r, "owner"), s(r, "zone"), iStr(r["objects"]), s(r, "created_at")}
+		},
+		// No Actions / CreateFields until the iRODS RPC lands — the
+		// data plane lives on the iRODS side, so create/delete here
+		// would need a round-trip the agent doesn't yet expose.
+	},
+	{
 		ID: "buckets", Title: "Buckets", Section: "Storage",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 22}, {Title: "ENDPOINT", Width: 32},

@@ -1668,7 +1668,7 @@ type sidebarEntry struct {
 // position. Only sections present in `entryOrder` are reshuffled.
 func reorderEntries(in []ResourceConfig, section string) []ResourceConfig {
 	entryOrder := map[string][]string{
-		"Storage": {"images", "volumes", "shares", "buckets", "volume-snapshots"},
+		"Storage": {"images", "volumes", "shares", "collections", "buckets", "volume-snapshots"},
 	}
 	pref, ok := entryOrder[section]
 	if !ok || len(in) == 0 {

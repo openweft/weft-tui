@@ -945,6 +945,7 @@ func TestCatalogue_RWCoverage(t *testing.T) {
 		"plugins":          true, // installed, not created
 		"volume-snapshots": true, // derived from volumes, separate flow
 		"volume-backups":   true, // derived from volumes, separate flow
+		"collections":      true, // iRODS-backed ; created via iRODS-side tooling until the proxy RPC lands
 	}
 	for _, r := range resourceCatalogue {
 		hasCreate := r.CreateFn != nil
