@@ -561,6 +561,34 @@ func loadInstalledPluginsCmd(client PluginsClient) tea.Cmd {
 	}
 }
 
+// staticPluginCatalogue mirrors the openweft/.../catalogue/ HCL tree
+// so the TUI always has something to show even when the agent's live
+// catalogue is empty or unreachable. Same pattern weft-webui uses
+// ([feedback_static_catalogue_fallback]) : the live catalogue wins
+// when populated, the static list fills the gap otherwise. Keeps
+// names byte-identical with the `plugin "<name>" {}` block on each
+// HCL — that's the catalogue identity install + the sidebar
+// RequiresPlugin gate consult.
+var staticPluginCatalogue = []struct {
+	Name, Version, Kind, Description string
+}{
+	{"caddy-edge", "v1", "edge-proxy", "Caddy edge proxy / load balancer"},
+	{"forgejo-ha", "v1", "git-forge", "Forgejo git forge, 3-replica HA"},
+	{"forgejo-runners-ha", "v1", "ci-runners", "Forgejo Actions runner farm"},
+	{"github-runners-ha", "v1", "ci-runners", "Self-hosted GitHub Actions runner farm"},
+	{"gitlab-runners-ha", "v1", "ci-runners", "Self-hosted GitLab runner farm"},
+	{"grafana-ha", "v1", "observability", "Grafana dashboards, 3-replica HA"},
+	{"irods-ha", "v1", "data-management", "iRODS HA — 3 catalog providers + shared Postgres iCAT"},
+	{"jupyterhub-ha", "v1", "compute", "JupyterHub multi-user notebook portal"},
+	{"loki-ha", "v1", "observability", "Loki log aggregation, 3-replica HA"},
+	{"loom-ha", "v1", "collaborative-editor", "Three weft-loom-server replicas behind Caddy, SSO via dex"},
+	{"postgres-ha", "v1", "database", "PostgreSQL HA — 3-replica streaming replication"},
+	{"prometheus-ha", "v1", "observability", "Prometheus metrics, 3-replica HA"},
+	{"redis-ha", "v1", "cache", "Redis HA — 3-replica with Sentinel"},
+	{"vault-ha", "v1", "secrets", "HashiCorp Vault HA"},
+	{"versitygw-ha", "v1", "object-storage", "VersityGW S3 object gateway (CubeFS-backed)"},
+}
+
 // listInstalledPlugins merges the catalogue (all available plugins
 // the agent knows about) with the currently-installed instances so
 // the Plugins view shows BOTH "installed" and "available" rows.
@@ -572,13 +600,15 @@ func loadInstalledPluginsCmd(client PluginsClient) tea.Cmd {
 // projects can each install the same catalogue entry independently.
 // Rows whose project is empty represent "available, not yet
 // installed in any project".
+//
+// Fallback : when the live ListPluginCatalogue returns empty or
+// errors, the static catalogue above fills in. Operators reported
+// "la liste plugins est vide" on the live cluster 2026-06-26 because
+// the agent's catalogue root was misconfigured ; same lesson as
+// [feedback_static_catalogue_fallback] applied to the webui earlier.
 func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) {
 	catResp, catErr := c.ListPluginCatalogue(ctx, &weftv1.ListPluginCatalogueRequest{})
 	instResp, instErr := c.ListInstalledPlugins(ctx, &weftv1.ListInstalledPluginsRequest{})
-	// Tolerate ListPluginCatalogue failing : at minimum show what's
-	// already running. Tolerate ListInstalledPlugins failing : at
-	// minimum show what's available. Both failing surfaces the
-	// installed-list error since that's the one operators came for.
 	if instErr != nil {
 		return nil, instErr
 	}
@@ -598,8 +628,25 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 		})
 		installed[p.Name] = true
 	}
-	if catErr == nil {
+	// Live catalogue wins when populated. Empty / errored ones fall
+	// through to the static list so the operator always sees what
+	// could be installed — same UX principle as the webui's
+	// /api/plugins/catalogue (cf. feedback_static_catalogue_fallback).
+	if catErr == nil && len(catResp.Entries) > 0 {
 		for _, e := range catResp.Entries {
+			if installed[e.Name] {
+				continue
+			}
+			out = append(out, map[string]any{
+				"uuid":         "",
+				"name":         e.Name,
+				"version":      e.Version,
+				"state":        "available",
+				"project_uuid": "",
+			})
+		}
+	} else {
+		for _, e := range staticPluginCatalogue {
 			if installed[e.Name] {
 				continue
 			}
