@@ -283,6 +283,11 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "loadbalancers", Title: "Load Balancers", Section: "Network",
+		// L7 / L4 reverse proxy in openweft = Caddy edge (cf.
+		// [project_reverse_proxy_caddy]). The catalogue plugin name
+		// is "caddy-edge" ; once installed, this sidebar entry
+		// surfaces the LB CRUD UI.
+		RequiresPlugin: "caddy-edge",
 		Columns: []table.Column{
 			{Title: "NAME", Width: 20}, {Title: "FRONTEND", Width: 22},
 			{Title: "BACKENDS", Width: 10}, {Title: "PROJECT", Width: 18},
@@ -792,13 +797,19 @@ var resourceCatalogue = []ResourceConfig{
 	},
 	{
 		ID: "plugins", Title: "Plugins", Section: "Admin",
+		// PROJECT dropped 2026-06-26 : the column read empty for
+		// every "available" row + the Plugins view is cluster-wide,
+		// not project-scoped. Replaced by KIND (data-management /
+		// observability / ci-runners / …) so operators can scan the
+		// catalogue by purpose. The per-instance project still
+		// surfaces in the detail drawer when needed.
 		Columns: []table.Column{
-			{Title: "NAME", Width: 22}, {Title: "VERSION", Width: 14},
-			{Title: "STATE", Width: 12}, {Title: "PROJECT", Width: 18},
+			{Title: "NAME", Width: 22}, {Title: "VERSION", Width: 10},
+			{Title: "KIND", Width: 20}, {Title: "STATE", Width: 12},
 		},
-		List:       listInstalledPlugins,
+		List: listInstalledPlugins,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "name"), s(r, "version"), s(r, "state"), s(r, "project_uuid")}
+			return []string{s(r, "name"), s(r, "version"), s(r, "kind"), s(r, "state")}
 		},
 		Actions: []ResourceAction{
 			{

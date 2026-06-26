@@ -612,6 +612,24 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 	if instErr != nil {
 		return nil, instErr
 	}
+	// Build a name → kind lookup from BOTH sources so installed rows
+	// (whose PluginInstance proto carries no kind) inherit the field
+	// from the catalogue entry. Live catalogue wins, static list
+	// fills in.
+	kinds := map[string]string{}
+	if catErr == nil {
+		for _, e := range catResp.Entries {
+			if e.Kind != "" {
+				kinds[e.Name] = e.Kind
+			}
+		}
+	}
+	for _, e := range staticPluginCatalogue {
+		if _, ok := kinds[e.Name]; !ok {
+			kinds[e.Name] = e.Kind
+		}
+	}
+
 	installed := map[string]bool{}
 	out := make([]map[string]any, 0)
 	for _, p := range instResp.Instances {
@@ -623,8 +641,9 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 			"uuid":         p.InstanceUuid,
 			"name":         p.Name,
 			"version":      "",
+			"kind":         kinds[p.Name],
 			"state":        state,
-			"project_uuid": p.Project,
+			"project_uuid": p.Project, // kept on the row map for the detail drawer
 		})
 		installed[p.Name] = true
 	}
@@ -641,6 +660,7 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 				"uuid":         "",
 				"name":         e.Name,
 				"version":      e.Version,
+				"kind":         e.Kind,
 				"state":        "available",
 				"project_uuid": "",
 			})
@@ -654,6 +674,7 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 				"uuid":         "",
 				"name":         e.Name,
 				"version":      e.Version,
+				"kind":         e.Kind,
 				"state":        "available",
 				"project_uuid": "",
 			})
