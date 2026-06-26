@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -157,6 +158,15 @@ type Model struct {
 	// they reported "AZ and Racks still missing".
 	sidebarOffset int
 
+	// metricsBus subscribes to NATS weft.host.>.metrics and keeps
+	// per-host ring buffers of the most recent samples. The Hosts
+	// detail drawer reads ring data via metricsBus.ring(uuid) and
+	// renders 4 sparklines (CPU/MEM/Net rx/Net tx). nil-safe : when
+	// WEFT_NATS_URL is unset / the dial fails, the bus exists but
+	// its channel never fires, so the Update loop stays idle on the
+	// metrics front. Owned for the lifetime of the Model.
+	metricsBus *hostMetricsBus
+
 	// identity is the connection identity rendered in the topbar's
 	// right side : "user@host" for an SSH endpoint, "local" for a
 	// Unix-socket endpoint. Updated by connSwitchMsg whenever the
@@ -224,17 +234,21 @@ type contextMenuItem struct {
 func New(client Client) Model {
 	idx := themeIndexByName(loadSavedTheme())
 	theme := NewThemeWith(themePresets[idx])
+	bus := newHostMetricsBus(slog.Default())
+	hosts := newHostsModel(theme)
+	hosts.metricsRing = bus.ring
 	return Model{
-		theme:    theme,
-		themeIdx: idx,
-		client:   client,
-		active:   tabHosts,
-		hosts:    newHostsModel(theme),
-		vms:      newVMsModel(theme),
-		projects: newProjectsModel(theme),
-		events:   newEventsModel(theme),
-		resource: map[string]*ResourceListModel{},
-		logPane:  newLogPane(80),
+		theme:      theme,
+		themeIdx:   idx,
+		client:     client,
+		active:     tabHosts,
+		hosts:      hosts,
+		vms:        newVMsModel(theme),
+		projects:   newProjectsModel(theme),
+		events:     newEventsModel(theme),
+		resource:   map[string]*ResourceListModel{},
+		logPane:    newLogPane(80),
+		metricsBus: bus,
 	}
 }
 
@@ -250,6 +264,10 @@ func (m Model) Init() tea.Cmd {
 		// is visited or the periodic ticker fires.
 		loadProjectsCmd(m.client),
 		tickRefresh(),
+		// Pump host-metrics samples into the Update loop. Re-armed
+		// after each delivery (see metricsSampleMsg handler) so the
+		// stream stays live for the session.
+		m.metricsBus.nextMetricsSample(),
 	)
 }
 
@@ -671,6 +689,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hosts.detailOpen = true
 		m.hosts.detailUUID = msg.uuid
 		return m, nil
+
+	case metricsSampleMsg:
+		// The bus already inserted the sample into its own ring
+		// buffer ; the Update side just needs to re-arm the pump so
+		// the next sample reaches us. Empty UUID = timer sentinel
+		// from nextMetricsSample (no new sample), still re-arm.
+		return m, m.metricsBus.nextMetricsSample()
 
 	case openHostConfirmRemoveMsg:
 		m.hosts.confirmRemove = msg.uuid
