@@ -845,6 +845,30 @@ var resourceCatalogue = []ResourceConfig{
 					return "installed " + name + " (instance=" + resp.InstanceUuid + ")", nil
 				},
 			},
+			{
+				Key:     "d",
+				Label:   "uninstall",
+				Confirm: "yes",
+				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+					name := s(row, "name")
+					if name == "" {
+						return "", fmt.Errorf("row has no plugin name")
+					}
+					if s(row, "state") == "available" {
+						return "", fmt.Errorf("plugin %q is not installed", name)
+					}
+					uuid := s(row, "uuid")
+					if uuid == "" {
+						return "", fmt.Errorf("plugin %q has no instance_uuid in the row map", name)
+					}
+					if _, err := c.UninstallPlugin(ctx, &weftv1.UninstallPluginRequest{
+						Name: name, InstanceUuid: uuid,
+					}); err != nil {
+						return "", fmt.Errorf("UninstallPlugin %s: %w", name, err)
+					}
+					return "uninstalled " + name + " (instance=" + uuid + ")", nil
+				},
+			},
 		},
 	},
 	{
