@@ -551,9 +551,14 @@ func loadInstalledPluginsCmd(client PluginsClient) tea.Cmd {
 		if err != nil {
 			return installedPluginsMsg{err: err}
 		}
+		// Sidebar gate ignores disabled instances : an operator who
+		// pressed `x` to hide a plugin's items expects them gone from
+		// the sidebar until they press `e` again. The Plugins view
+		// itself still shows the row (state="disabled") so re-enable
+		// stays one keystroke away.
 		names := make(map[string]bool, len(resp.Instances))
 		for _, p := range resp.Instances {
-			if p.Name != "" {
+			if p.Name != "" && !p.Disabled {
 				names[p.Name] = true
 			}
 		}
@@ -630,6 +635,12 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 		}
 	}
 
+	// installed = name → true when an ENABLED instance exists. The
+	// sidebar's RequiresPlugin gate consumes the same set, so a
+	// disabled instance should NOT keep the gate open — that's the
+	// point of EnablePlugin / DisablePlugin (commit ce47616 follow-up).
+	// Disabled rows still appear in the Plugins view (state="disabled")
+	// so operators can re-enable them.
 	installed := map[string]bool{}
 	out := make([]map[string]any, 0)
 	for _, p := range instResp.Instances {
@@ -643,9 +654,12 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 			"version":      "",
 			"kind":         kinds[p.Name],
 			"state":        state,
+			"disabled":     p.Disabled,
 			"project_uuid": p.Project, // kept on the row map for the detail drawer
 		})
-		installed[p.Name] = true
+		if !p.Disabled {
+			installed[p.Name] = true
+		}
 	}
 	// Live catalogue wins when populated. Empty / errored ones fall
 	// through to the static list so the operator always sees what

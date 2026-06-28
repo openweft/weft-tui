@@ -869,6 +869,56 @@ var resourceCatalogue = []ResourceConfig{
 					return "uninstalled " + name + " (instance=" + uuid + ")", nil
 				},
 			},
+			{
+				// `x` disables an installed plugin without tearing it
+				// down. The install side-effects (VMs etc.) stay in
+				// place ; the sidebar gate stops considering the
+				// plugin installed on the next refresh so its
+				// catalogue entries (Collections / Shares / …) drop
+				// from the sidebar. Re-enabled via `e`.
+				Key:   "x",
+				Label: "disable",
+				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+					name := s(row, "name")
+					uuid := s(row, "uuid")
+					if name == "" || uuid == "" {
+						return "", fmt.Errorf("disable needs name + instance_uuid")
+					}
+					if d, _ := row["disabled"].(bool); d {
+						return "", fmt.Errorf("plugin %q is already disabled", name)
+					}
+					if _, err := c.DisablePlugin(ctx, &weftv1.DisablePluginRequest{
+						Name: name, InstanceUuid: uuid,
+					}); err != nil {
+						return "", fmt.Errorf("DisablePlugin %s: %w", name, err)
+					}
+					return "disabled " + name, nil
+				},
+			},
+			{
+				// `e` flips a disabled instance back to active. Idempotent
+				// on the agent ; the TUI guards on the row's disabled
+				// flag so the action panel only shows it when it'd do
+				// something.
+				Key:   "e",
+				Label: "enable",
+				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+					name := s(row, "name")
+					uuid := s(row, "uuid")
+					if name == "" || uuid == "" {
+						return "", fmt.Errorf("enable needs name + instance_uuid")
+					}
+					if d, _ := row["disabled"].(bool); !d {
+						return "", fmt.Errorf("plugin %q is already enabled", name)
+					}
+					if _, err := c.EnablePlugin(ctx, &weftv1.EnablePluginRequest{
+						Name: name, InstanceUuid: uuid,
+					}); err != nil {
+						return "", fmt.Errorf("EnablePlugin %s: %w", name, err)
+					}
+					return "enabled " + name, nil
+				},
+			},
 		},
 	},
 	{
