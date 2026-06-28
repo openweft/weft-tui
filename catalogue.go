@@ -11,8 +11,23 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
 	weftv1 "github.com/openweft/weft-proto"
 )
+
+// faintRowCells returns cells styled with lipgloss.Faint so the row
+// reads as administratively-paused without the operator having to
+// scan the STATE column. Shared by the Plugins view's RowToCells
+// when the instance is disabled — kept here so the styling is
+// consistent across any future view that grows a similar flag.
+func faintRowCells(in []string) []string {
+	style := lipgloss.NewStyle().Faint(true)
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = style.Render(s)
+	}
+	return out
+}
 
 // resourceCatalogue is the registry consulted by the command
 // palette. ID matches the slug the user types after `:` (e.g.
@@ -809,7 +824,14 @@ var resourceCatalogue = []ResourceConfig{
 		},
 		List: listInstalledPlugins,
 		RowToCells: func(r map[string]any) []string {
-			return []string{s(r, "name"), s(r, "version"), s(r, "kind"), s(r, "state")}
+			cells := []string{s(r, "name"), s(r, "version"), s(r, "kind"), s(r, "state")}
+			// Render disabled rows faint so they read at a glance as
+			// paused — the STATE column still says "disabled" but the
+			// dim styling is the cue scanning operators catch first.
+			if d, _ := r["disabled"].(bool); d {
+				return faintRowCells(cells)
+			}
+			return cells
 		},
 		Actions: []ResourceAction{
 			{
