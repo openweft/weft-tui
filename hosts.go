@@ -724,13 +724,9 @@ func (h hostsRow) tableRow(theme Theme, controlPlaneUUIDs map[string]struct{}) t
 	// (DriverVersions empty, Hypervisor non-empty).
 	// RACK column = "<AZ>:<RACK>" matching the Racks view ;
 	// homonym racks across DCs stay distinguishable at a glance.
-	// Operator directive 2026-06-24.
-	rackLabel := dashEmpty(h.Rack)
-	if h.Rack != "" && h.AZ != "" {
-		rackLabel = h.AZ + ":" + h.Rack
-	} else if h.AZ != "" && h.Rack == "" {
-		rackLabel = h.AZ + ":—"
-	}
+	// Operator directive 2026-06-24. formatAZRack shared with the
+	// VMs panel so both render placement the same way.
+	rackLabel := formatAZRack(h.AZ, h.Rack)
 	return table.Row{
 		cp,
 		uuidFull,
@@ -940,4 +936,22 @@ func dashEmpty(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// formatAZRack renders an (AZ, Rack) pair as the canonical
+// "<az>:<rack>" label used across every panel that surfaces
+// placement (Hosts, VMs, …). Homonym racks across DCs stay
+// distinguishable at a glance. Defined here so the two callers
+// share one rule for what to show when one half is missing.
+func formatAZRack(az, rack string) string {
+	if az != "" && rack != "" {
+		return az + ":" + rack
+	}
+	if az != "" {
+		return az + ":—"
+	}
+	if rack != "" {
+		return "—:" + rack
+	}
+	return "—"
 }
