@@ -76,7 +76,17 @@ type ResourceAction struct {
 	Key     string // "d", "x", "r" …
 	Label   string // displayed in the help footer
 	Confirm string // when non-empty, asks the operator to type this string before firing
-	Do      func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (msg string, err error)
+	// Fields, when non-nil and returning >0 entries, opens a form
+	// modal before Do is invoked. Useful for actions whose payload
+	// varies per row (notably plugin install, where the required
+	// inputs come from the catalogue manifest, not from a static
+	// schema on the catalogue entry). The form's collected
+	// key=value pairs are folded into the row map under
+	// "_form_values" so Do can pull them out. Confirm is ignored
+	// when Fields is set — the form itself is the operator's
+	// explicit confirmation step.
+	Fields func(row map[string]any) []FormField
+	Do     func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (msg string, err error)
 }
 
 // ResourceListModel is the generic Bubble Tea model that backs every
@@ -406,6 +416,41 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 			return resourceActionMsg{cfg: cfg.ID, action: "edit", row: row, msg: out, err: err}
 		}
 
+	case actionFormSubmitMsg:
+		// Same close-form-then-fire-RPC pattern as create / edit, but
+		// the dispatch target is one specific ResourceAction.Do (the
+		// action whose key matches msg.actionKey). The form values
+		// are folded into the row under "_form_values" so Do can
+		// pull them out without changing its signature.
+		if msg.cfg != m.cfg.ID || m.create == nil {
+			return m, nil
+		}
+		var matched *ResourceAction
+		for i := range m.cfg.Actions {
+			if m.cfg.Actions[i].Key == msg.actionKey {
+				matched = &m.cfg.Actions[i]
+				break
+			}
+		}
+		m.create = nil
+		if matched == nil {
+			return m, nil
+		}
+		cfg := m.cfg
+		client := m.client
+		action := *matched
+		row := msg.row
+		if row == nil {
+			row = map[string]any{}
+		}
+		row["_form_values"] = msg.values
+		return m, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			out, err := action.Do(ctx, client, row)
+			return resourceActionMsg{cfg: cfg.ID, action: action.Key, row: row, msg: out, err: err}
+		}
+
 	case tea.KeyMsg:
 		// Create form open : route every key to the form's
 		// textinput / submit logic. The form itself emits the
@@ -526,6 +571,17 @@ func (m *ResourceListModel) Update(msg tea.Msg) (*ResourceListModel, tea.Cmd) {
 				row := m.selected()
 				if row == nil {
 					return m, nil
+				}
+				// Fields-bearing actions open a form modal first ;
+				// the form's submit re-enters via actionFormSubmitMsg
+				// where Do is finally called with the values folded
+				// into the row. Empty Fields() return falls through
+				// to the direct path so actions can opt in dynamically.
+				if a.Fields != nil {
+					if fields := a.Fields(row); len(fields) > 0 {
+						m.create = newActionFormModel(m.cfg, a.Key, row, fields)
+						return m, nil
+					}
 				}
 				if a.Confirm != "" {
 					m.confirmAction = a.Key

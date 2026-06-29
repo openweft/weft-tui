@@ -60,6 +60,16 @@ type createFormModel struct {
 	// pre-fill input values and to pass through to EditFn so the
 	// closure can read row["uuid"] / row["name"] etc.
 	editRow map[string]any
+	// actionMode + actionKey + actionRow drive the third submit
+	// path : a ResourceAction with Fields opens the form on its
+	// keypress, and submit fires actionFormSubmitMsg{cfg, key, row,
+	// values}. The dispatcher finds the matching action by Key in
+	// cfg.Actions, folds the values into the row map, and calls Do.
+	// Used by plugin install where the required inputs come from
+	// the catalogue manifest (per-row), not from a static schema on
+	// the ResourceConfig.
+	actionMode bool
+	actionKey  string
 }
 
 // newCreateFormModel arms a fresh form with one textinput per field.
@@ -109,6 +119,36 @@ func newEditFormModel(cfg ResourceConfig, row map[string]any) *createFormModel {
 	}
 }
 
+// newActionFormModel arms a form for a ResourceAction whose Fields
+// function returned >0 entries. The row is captured so it can be
+// passed through to the action's Do alongside the form values ; the
+// fields list is what the action wants prompted (typically derived
+// from per-row metadata like a plugin's input declarations). Input
+// defaults are pulled from FormField.Placeholder when no value lives
+// on the row — different from edit mode where the row provides the
+// initial value.
+func newActionFormModel(cfg ResourceConfig, actionKey string, row map[string]any, fields []FormField) *createFormModel {
+	inputs := make([]textinput.Model, len(fields))
+	for i, f := range fields {
+		ti := textinput.New()
+		ti.Placeholder = f.Placeholder
+		ti.CharLimit = 256
+		ti.Width = 48
+		if i == 0 {
+			ti.Focus()
+		}
+		inputs[i] = ti
+	}
+	return &createFormModel{
+		fields:     fields,
+		inputs:     inputs,
+		cfg:        cfg,
+		actionMode: true,
+		actionKey:  actionKey,
+		editRow:    row, // reused as the row carrier
+	}
+}
+
 // rowValueAsString flattens a row's any-typed value to text the
 // textinput can host. Mirrors the projection s()/iStr() use in
 // catalogue_listers but kept here so the form stays self-contained.
@@ -152,6 +192,19 @@ type editSubmitMsg struct {
 	values map[string]string
 }
 
+// actionFormSubmitMsg fires when an action-mode form is submitted.
+// The dispatcher in resources.go finds the matching ResourceAction
+// by Key in cfg.Actions, folds values into the row map, and calls
+// Do. Decoupled from createSubmitMsg / editSubmitMsg so the same
+// form widget can stay a single type while serving three distinct
+// downstream paths.
+type actionFormSubmitMsg struct {
+	cfg       string
+	actionKey string
+	row       map[string]any
+	values    map[string]string
+}
+
 type createCancelMsg struct{ cfg string }
 
 func (f *createFormModel) Update(msg tea.Msg) (*createFormModel, tea.Cmd) {
@@ -171,6 +224,13 @@ func (f *createFormModel) Update(msg tea.Msg) (*createFormModel, tea.Cmd) {
 			if err != nil {
 				f.errMsg = err.Error()
 				return f, nil
+			}
+			if f.actionMode {
+				row := f.editRow
+				key := f.actionKey
+				return f, func() tea.Msg {
+					return actionFormSubmitMsg{cfg: f.cfg.ID, actionKey: key, row: row, values: values}
+				}
 			}
 			if f.editMode {
 				row := f.editRow
