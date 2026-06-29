@@ -275,13 +275,21 @@ func New(client Client) Model {
 		resource:   map[string]*ResourceListModel{},
 		logPane:    newLogPane(80),
 		metricsBus: bus,
+		// Allocate the events pump at construction so Init can
+		// start streaming PlatformEvents from boot — the Logs pane
+		// gets fed with cluster activity (restarts, installs, host
+		// state changes) without the operator having to click the
+		// Events tab first. Operator directive 2026-06-29 "on a un
+		// tab logs mais tu ne t'en sers pas pour y mettre des
+		// infos utiles sur ce que fait le cluster".
+		eventsPump: newEventStreamPump(),
 	}
 }
 
 // Init returns the startup Cmd : kick off the first hosts fetch +
 // arm the auto-refresh ticker.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		loadHostsCmd(m.client),
 		// Seed the tenant + project lookup so the VMs tab's
 		// "<tenant>:<project>" prefix is populated before the
@@ -298,7 +306,17 @@ func (m Model) Init() tea.Cmd {
 		// after each delivery (see metricsSampleMsg handler) so the
 		// stream stays live for the session.
 		m.metricsBus.nextMetricsSample(),
-	)
+	}
+	// Open the PlatformEvents server-stream at boot so the Logs
+	// pane gets cluster activity (restarts, installs, host state
+	// changes) from the first render — the Events sub-tab still
+	// shows the raw firehose. The pump itself was allocated in
+	// New() ; the Cmd here just wires the gRPC stream and the
+	// receive loop.
+	if m.client != nil && m.eventsPump != nil {
+		cmds = append(cmds, startEventsStreamCmd(m.client, m.eventsPump))
+	}
+	return tea.Batch(cmds...)
 }
 
 // hostsForResource returns the host rows logically attached to the
@@ -871,6 +889,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case eventReceivedMsg:
 		if !m.events.paused && msg.ev != nil {
 			m.events.appendLine(m.events.formatEvent(msg.ev))
+		}
+		// Fan high-signal events out to the Logs pane so the
+		// operator sees what the cluster is doing without having
+		// to flip to the Events tab. logEventSummary returns ""
+		// for routine chatter (heartbeats, periodic sweeps) — only
+		// state transitions, restarts, migrations, installs and
+		// errors get a Logs line.
+		if msg.ev != nil {
+			if level, line := classifyEventForLogs(msg.ev); line != "" {
+				m.logPane.append(level, line)
+			}
 		}
 		return m, receiveNextEventCmd(m.eventsPump)
 

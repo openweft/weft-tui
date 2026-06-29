@@ -131,6 +131,87 @@ func (m eventsModel) formatEvent(e *weftv1.PlatformEvent) string {
 	return fmt.Sprintf("[%s] %s %s", ts, tinted, subject)
 }
 
+// classifyEventForLogs maps a PlatformEvent to (level, human line)
+// for the Logs pane. Returns ("", "") for routine chatter we don't
+// want noisy in the operator's log — heartbeats, periodic sweeps,
+// metrics. Everything that meaningfully describes "what the
+// cluster is doing" (restart, install, plugin lifecycle, host
+// state transitions, migrations) becomes one INFO line ; anything
+// matching `.failed` / `.error` gets routed at ERROR level.
+//
+// Centralised so both call sites (the Logs fan-out in app.go's
+// eventReceivedMsg handler + any future audit log) share one
+// rule for what's worth surfacing.
+func classifyEventForLogs(e *weftv1.PlatformEvent) (string, string) {
+	if e == nil || e.Kind == "" {
+		return "", ""
+	}
+	kind := e.Kind
+	// Drop the routine telemetry. These fire once per second per
+	// VM / host across the cluster and would drown the Logs pane.
+	switch kind {
+	case "host.heartbeat", "host.metrics", "vm.metrics", "guest.heartbeat":
+		return "", ""
+	}
+	if strings.HasPrefix(kind, "host.metrics.") ||
+		strings.HasPrefix(kind, "vm.metrics.") ||
+		strings.HasPrefix(kind, "guest.metrics.") {
+		return "", ""
+	}
+	component, verb := splitKind(kind)
+	subject := e.Subject
+	if subject == "" {
+		subject = "—"
+	}
+	level := ResilientEventInfo
+	if isErrorKind(kind) {
+		level = ResilientEventError
+	}
+	// Decorate a handful of high-traffic verbs with the relevant
+	// meta so the Logs line reads like a story instead of a code.
+	var extra string
+	if e.Meta != nil {
+		switch component {
+		case "vm":
+			switch verb {
+			case "state_changed":
+				if from, to := e.Meta["from"], e.Meta["to"]; from != "" || to != "" {
+					extra = " (" + dashEmpty(from) + " → " + dashEmpty(to) + ")"
+				}
+			case "migrated":
+				if old, new := e.Meta["old_host"], e.Meta["new_host"]; old != "" || new != "" {
+					extra = " (" + shortUUID(old) + " → " + shortUUID(new) + ")"
+				}
+			case "respawned", "restarted":
+				if reason := e.Meta["reason"]; reason != "" {
+					extra = " (" + reason + ")"
+				}
+			}
+		case "plugin":
+			if inst := e.Meta["instance"]; inst != "" {
+				extra = " instance=" + shortUUID(inst)
+			}
+		case "host":
+			if verb == "state_changed" {
+				if from, to := e.Meta["from"], e.Meta["to"]; from != "" || to != "" {
+					extra = " (" + dashEmpty(from) + " → " + dashEmpty(to) + ")"
+				}
+			}
+		}
+	}
+	return level, component + " " + verb + " " + subject + extra
+}
+
+// shortUUID truncates UUIDs to their first 8 chars for log lines —
+// matches the table-display convention so log lines and rows line
+// up at a glance. Pass-through for shorter strings.
+func shortUUID(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
 // splitKind splits "vm.state.running" → ("vm", "state.running").
 // Component-less events return ("event", kind) so the formatter
 // still has something to render.
