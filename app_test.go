@@ -1585,6 +1585,66 @@ func TestResource_FormOpenSwallowsDigitShortcuts(t *testing.T) {
 	}
 }
 
+// TestResource_FormSubmitReachesResourceModel : the top-level Model
+// must forward form-submit msgs to the active ResourceListModel ;
+// without this, Enter on a form looks dead because the submit Cmd's
+// msg got dropped in forwardToActiveTab's missing tabResource branch.
+// Operator-reported 2026-06-29 : "la touche entrée ne semble pas
+// valider le formulaire".
+func TestResource_FormSubmitReachesResourceModel(t *testing.T) {
+	var doCalls int
+	cfg := ResourceConfig{
+		ID: "plugins-fake", Title: "P", Section: "P",
+		Columns:    []table.Column{{Title: "NAME", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+		Actions: []ResourceAction{{
+			Key:    "i",
+			Label:  "install",
+			Fields: func(row map[string]any) []FormField { return []FormField{{Key: "domain", Label: "Domain"}} },
+			Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+				doCalls++
+				return "ok", nil
+			},
+		}},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha"}})
+
+	m := New(nil)
+	m.resource[cfg.ID] = rm
+	m.active = tabResource
+	m.currentResource = cfg.ID
+
+	// Open form via `i` on the parent Model so the new key-routing gate
+	// is exercised end-to-end.
+	out, _ := m.Update(keyMsg('i'))
+	m = out.(Model)
+	if m.resource[cfg.ID].create == nil {
+		t.Fatalf("`i` should open the form via parent dispatch")
+	}
+	// Fill + Enter through the parent Model.
+	m.resource[cfg.ID].create.inputs[0].SetValue("example.com")
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatalf("Enter on filled form should emit a submit Cmd")
+	}
+	// Run the submit Cmd → it produces actionFormSubmitMsg. The msg
+	// MUST reach the resource model through the top-level Model's
+	// forwardToActiveTab. Drive it explicitly.
+	submitMsg := cmd()
+	out, cmd = m.Update(submitMsg)
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatalf("actionFormSubmitMsg should produce a Cmd that runs Do")
+	}
+	_ = cmd()
+	if doCalls != 1 {
+		t.Errorf("Do called %d times ; want 1 (Enter dispatched submit through parent Model)", doCalls)
+	}
+}
+
 // TestPluginInstallFields_ShapesFromRow checks the helper that
 // derives a form from a plugins-view row. Mirrors the agent's input
 // schema : required without default → field surfaces ; optional with
