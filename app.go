@@ -451,13 +451,21 @@ type flavorShapeKey struct {
 }
 
 // flavorLookup is the closure vmsModel.applyVMs uses to fill the
-// FLAVOR column. Empty cache or no match → empty string ; the
-// table widget renders "—". 2026-06-24 VM flavor MVP.
+// FLAVOR column. Returns the matched catalogue name when one fits
+// the (vcpu, memMb) shape, else "custom" — the VM was created off-
+// catalogue. Empty string is reserved for the pre-cache window
+// (flavors haven't loaded yet) so the operator can tell "no data"
+// apart from "no match". Operator directive 2026-06-29 :
+// "dans la vue VM la colonne flavor est vide. cela ne devrait
+// pas se produire".
 func (m *Model) flavorLookup(cpu uint32, memMb uint64) string {
 	if m.flavorByShape == nil {
 		return ""
 	}
-	return m.flavorByShape[flavorShapeKey{vcpu: cpu, memMb: memMb}]
+	if name, ok := m.flavorByShape[flavorShapeKey{vcpu: cpu, memMb: memMb}]; ok {
+		return name
+	}
+	return "custom"
 }
 
 // flavorsLoadedMsg carries the result of a one-shot ListFlavors
@@ -791,8 +799,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.flavors != nil {
 			cache := make(map[flavorShapeKey]string, len(msg.flavors))
 			for _, f := range msg.flavors {
-				gib := uint64(ramToGiB(f.Ram))
-				cache[flavorShapeKey{vcpu: uint32(f.Vcpu), memMb: gib * 1024}] = f.Name
+				// Use MB precision so sub-GiB flavors (256Mi, 512Mi)
+				// match their VMs. The old GiB-rounded key clipped
+				// to 0 for everything under 1 GiB and FLAVOR came
+				// out empty for the small infra VMs.
+				mb := uint64(ramToMB(f.Ram))
+				cache[flavorShapeKey{vcpu: uint32(f.Vcpu), memMb: mb}] = f.Name
 			}
 			m.flavorByShape = cache
 		}
