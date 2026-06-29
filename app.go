@@ -645,8 +645,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case resourceActionMsg:
 		if msg.err != nil {
-			m.setError(fmt.Sprintf("%s : %s", msg.action, msg.err))
+			m.logError(fmt.Sprintf("%s : %s", msg.action, msg.err))
 		} else if msg.msg != "" {
+			m.logInfo(msg.msg)
 			m.setMsg(msg.msg)
 		}
 		if rm, ok := m.resource[msg.cfg]; ok {
@@ -704,7 +705,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.hosts.err = msg.err
 			m.hosts.loading = false
-			m.setError("refresh failed: " + msg.err.Error())
+			m.logError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
 			m.hosts.applyHosts(msg.resp)
 			// Refresh the VMs HOST column with the now-populated
@@ -746,9 +747,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostActionMsg:
 		if msg.err != nil {
-			m.setError(fmt.Sprintf("%s %s failed: %s", msg.action, msg.host, msg.err))
+			m.logError(fmt.Sprintf("%s %s failed: %s", msg.action, msg.host, msg.err))
 		} else {
-			m.setMsg(fmt.Sprintf("%s %s ok", msg.action, msg.host))
+			s := fmt.Sprintf("%s %s ok", msg.action, msg.host)
+			m.logInfo(s)
+			m.setMsg(s)
 		}
 		return m, loadHostsCmd(m.client)
 
@@ -756,7 +759,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.vms.err = msg.err
 			m.vms.loading = false
-			m.setError("refresh failed: " + msg.err.Error())
+			m.logError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
 			m.vms.applyVMs(msg.resp, m.hosts.placementByUUID, m.projects.tenantNameForProject, m.flavorLookup)
 			// Push fresh per-host counts to the hosts model so the
@@ -781,9 +784,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case vmActionMsg:
 		if msg.err != nil {
-			m.setError(fmt.Sprintf("%s %s failed: %s", msg.action, msg.name, msg.err))
+			m.logError(fmt.Sprintf("%s %s failed: %s", msg.action, msg.name, msg.err))
 		} else {
-			m.setMsg(fmt.Sprintf("%s %s ok", msg.action, msg.name))
+			s := fmt.Sprintf("%s %s ok", msg.action, msg.name)
+			m.logInfo(s)
+			m.setMsg(s)
 		}
 		return m, loadVMsCmd(m.client)
 
@@ -803,7 +808,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.projects.err = msg.err
 			m.projects.loading = false
-			m.setError("refresh failed: " + msg.err.Error())
+			m.logError("refresh failed: " + msg.err.Error())
 		} else if msg.resp != nil {
 			m.projects.applyProjects(msg.resp, msg.counts, msg.tenants)
 			// Re-render the VMs tab so the new tenant lookup is
@@ -818,11 +823,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectActionMsg:
 		switch {
 		case msg.err != nil:
-			m.setError(fmt.Sprintf("%s project %s failed: %s", msg.action, msg.name, msg.err))
+			m.logError(fmt.Sprintf("%s project %s failed: %s", msg.action, msg.name, msg.err))
 		case msg.action == "create" && !msg.created:
-			m.setMsg(fmt.Sprintf("project %s already exists", msg.name))
+			s := fmt.Sprintf("project %s already exists", msg.name)
+			m.logInfo(s)
+			m.setMsg(s)
 		default:
-			m.setMsg(fmt.Sprintf("%s project %s ok", msg.action, msg.name))
+			s := fmt.Sprintf("%s project %s ok", msg.action, msg.name)
+			m.logInfo(s)
+			m.setMsg(s)
 		}
 		return m, loadProjectsCmd(m.client)
 
@@ -3421,6 +3430,22 @@ func (m *Model) clearStatus() {
 	m.statusMsg = ""
 	m.statusErr = false
 }
+
+// logError routes a long-form error to the log pane (Logs tab) where
+// the operator can read it after the status bar's transient text
+// clears. Operator directive 2026-06-29 : "le message n'a rien a
+// faire en bas. il devrait etre dans la zone existante a cet effet".
+// Resource action / RPC failures use this instead of setError so the
+// status bar stays a navigation surface (refreshing hints, connection
+// state, theme switches) and the persistent log is the source of
+// truth for what just failed.
+func (m *Model) logError(s string) { m.logPane.append(ResilientEventError, s) }
+
+// logInfo mirrors logError for success / progress entries — kept on
+// the log pane so the history of "installed loom-ha (instance=…)"
+// stays scrollable. Status bar still flashes the same string via
+// setMsg for an at-a-glance confirmation.
+func (m *Model) logInfo(s string) { m.logPane.append(ResilientEventInfo, s) }
 
 // ActiveTab is a tiny accessor exported for tests : Bubble Tea's
 // `View()` output is hard to assert on, so tests transition state
