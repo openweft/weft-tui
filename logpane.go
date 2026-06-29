@@ -43,13 +43,30 @@ const logPaneCapacity = 200
 // can dump more with PgDn OR drag the horizontal handle between
 // body + log pane to grow / shrink it.
 const (
-	logPaneDefaultHeight = 3 // slim drawer by default ; operator drags to grow
+	logPaneDefaultHeight = 3 // initial viewport rows before the first WindowSizeMsg lands
 	logPaneMinHeight     = 0 // 0 viewport rows ; drawer collapses to just the tab strip + borders
 	// High ceiling — operator can drag the divider up almost to the
 	// body's content area ; bodyHeight()'s floor (3) is what actually
 	// stops the rise, not this constant.
 	logPaneMaxHeight = 200
 )
+
+// defaultLogPaneHeight is the viewport row count the pane settles
+// on after the first WindowSizeMsg, scaled to ≈1/5 of the terminal
+// height so the log surface stays useful without crowding the
+// table. Floors at logPaneDefaultHeight so tiny terminals still
+// keep ≥3 visible log rows ; caps at logPaneMaxHeight defensively.
+// Operator directive 2026-06-29.
+func defaultLogPaneHeight(totalRows int) int {
+	h := totalRows / 5
+	if h < logPaneDefaultHeight {
+		h = logPaneDefaultHeight
+	}
+	if h > logPaneMaxHeight {
+		h = logPaneMaxHeight
+	}
+	return h
+}
 
 // SetHeight sets the viewport's visible row count + refreshes the
 // rendered content so the operator sees the new size immediately.

@@ -557,9 +557,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// FIRST so bodyHeight() (which subtracts logPane.height())
 		// stays in sync.
 		m.logPane.resize(m.width)
-		// Apply any drag-set height override.
+		// Default height = one-fifth of the terminal so the log
+		// pane starts visible at a useful size (operator directive
+		// 2026-06-29 : "regle la hauteur de la zone tabpanel a 1/5
+		// de la hauteur de la tui"). A drag-set override (logPaneH)
+		// still wins so once the operator resizes, their pick
+		// sticks across subsequent WindowSizeMsgs.
 		if m.logPaneH > 0 {
 			m.logPane.SetHeight(m.logPaneH)
+		} else {
+			m.logPane.SetHeight(defaultLogPaneHeight(m.height))
 		}
 		// Reserve : status bar (2 lines) + 1 line breather + sidebar
 		// occupies its own horizontal slot, so the body width must
