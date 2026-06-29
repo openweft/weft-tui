@@ -60,6 +60,10 @@ type vmRow struct {
 	CPU      uint32
 	MemMB    uint64
 	IP       string
+	// Restart counter + policy ceiling for the RESTARTS column.
+	// MaxRestarts=0 means no respawn policy applies → just N.
+	RestartCount uint32
+	MaxRestarts  uint32
 }
 
 // vmCountsByHost tallies how many of the given VM rows are placed
@@ -125,6 +129,7 @@ func vmsColumns() []table.Column {
 		{Title: "IMAGE", Width: 20},
 		{Title: "CPU", Width: 4},
 		{Title: "MEM-MB", Width: 8},
+		{Title: "RESTARTS", Width: 9},
 	}
 }
 
@@ -345,6 +350,8 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 			CPU:         v.Cpu,
 			MemMB:       v.MemMb,
 			IP:          v.Ip,
+			RestartCount: v.RestartCount,
+			MaxRestarts:  v.MaxRestarts,
 		}
 		rows = append(rows, row)
 	}
@@ -396,6 +403,30 @@ func (r vmRow) tableRow(theme Theme) table.Row {
 		dashEmpty(shortImage(r.Image)),
 		fmt.Sprintf("%d", r.CPU),
 		fmt.Sprintf("%d", r.MemMB),
+		formatRestarts(theme, r.RestartCount, r.MaxRestarts),
+	}
+}
+
+// formatRestarts renders the RESTARTS column as "N/M" (k8s shape).
+// MaxRestarts=0 means no respawn policy applies — just N. The badge
+// is amber when count is non-zero but below the ceiling (workload
+// has restarted but the policy still tolerates more), red when the
+// count is at or past the ceiling (about to exhaust / has exhausted
+// — operator attention).
+func formatRestarts(theme Theme, count, max uint32) string {
+	var s string
+	if max == 0 {
+		s = fmt.Sprintf("%d", count)
+	} else {
+		s = fmt.Sprintf("%d/%d", count, max)
+	}
+	switch {
+	case count == 0:
+		return s
+	case max > 0 && count >= max:
+		return theme.BadgeBad.Render(s)
+	default:
+		return theme.BadgeWarn.Render(s)
 	}
 }
 
