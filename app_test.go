@@ -1538,6 +1538,53 @@ func TestResource_ActionFieldsEmptyFallsThroughToDirectPath(t *testing.T) {
 	}
 }
 
+// TestResource_FormOpenSwallowsDigitShortcuts : when a resource
+// form is open, the digit keys (1/2/3/4 — global tab shortcuts) and
+// the action letters must reach the textinput instead of triggering
+// global navigation. Operator-reported 2026-06-29 : digits had no
+// way to land in form fields because they always fired tab switches.
+func TestResource_FormOpenSwallowsDigitShortcuts(t *testing.T) {
+	cfg := ResourceConfig{
+		ID: "plugins-fake", Title: "Plugins", Section: "Admin",
+		Columns:    []table.Column{{Title: "NAME", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+		Actions: []ResourceAction{{
+			Key:   "i",
+			Label: "install",
+			Fields: func(row map[string]any) []FormField {
+				return []FormField{{Key: "replicas", Label: "Replicas", Numeric: true}}
+			},
+			Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+				return "", nil
+			},
+		}},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha"}})
+	rm, _ = rm.Update(keyMsg('i'))
+	if rm.create == nil {
+		t.Fatalf("`i` should open the form")
+	}
+
+	// Stand up a top-level Model focused on this resource, then ensure
+	// pressing "3" while the form is open does NOT switch to tabProjects.
+	m := New(nil)
+	m.resource[cfg.ID] = rm
+	m.active = tabResource
+	m.currentResource = cfg.ID
+
+	out, _ := m.Update(keyMsg('3'))
+	mm := out.(Model)
+	if mm.active != tabResource {
+		t.Errorf("digit while form open : active = %v ; want tabResource", mm.active)
+	}
+	// The form's first textinput should now contain "3".
+	if v := mm.resource[cfg.ID].create.inputs[0].Value(); v != "3" {
+		t.Errorf("textinput value = %q ; want %q", v, "3")
+	}
+}
+
 // TestPluginInstallFields_ShapesFromRow checks the helper that
 // derives a form from a plugins-view row. Mirrors the agent's input
 // schema : required without default → field surfaces ; optional with

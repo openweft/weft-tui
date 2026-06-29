@@ -1036,6 +1036,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Resource form open : route every key straight to the form so
+	// digits / shortcut letters reach the textinput instead of
+	// triggering global tab switches (1/2/3/4) or action verbs
+	// (a / d / e / i / x / …). Operator-reported 2026-06-29 :
+	// "il faut debinder les touche 1,2,3, 4... sinon on ne peut
+	// pas tapper de chiffres dans les champs des formulaires".
+	if m.active == tabResource && m.currentResource != "" {
+		if rm, ok := m.resource[m.currentResource]; ok && rm != nil && rm.create != nil {
+			_, cmd := rm.Update(msg)
+			return m, cmd
+		}
+	}
+
 	// --- Context menu : keyboard-triggered. ---
 	// "a" on a table row opens the per-row action menu. Keyboard
 	// is the PRIMARY trigger (terminals don't all forward
