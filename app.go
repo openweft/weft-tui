@@ -118,6 +118,15 @@ type Model struct {
 	height          int
 	showHelp        bool
 
+	// copyMode = true means mouse capture is suspended so the
+	// terminal's native click-drag selection works. Operators toggle
+	// this with Ctrl+S (Select) to copy text out of the Logs pane or
+	// any visible cell. Re-entering Ctrl+S (or Esc) restores the
+	// usual mouse-driven UX (click rows, drag dividers, wheel-scroll
+	// the table). Operator directive 2026-06-29 : "il faudrait que
+	// l'on puisse copier les textes qui sont dans le tab logs".
+	copyMode bool
+
 	// eventsPump bridges the WatchEvents goroutine to the Update
 	// loop. Allocated lazily the first time we open the Events tab,
 	// then re-used across tab switches.
@@ -1090,6 +1099,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// --- Global keys. ---
 	switch key {
+	case "ctrl+s":
+		// Select / copy mode : toggle mouse capture off so the
+		// terminal's native click-drag selection works. The status
+		// bar shows the mode hint ; Ctrl+S or Esc returns to the
+		// usual mouse-driven UX.
+		m.copyMode = !m.copyMode
+		if m.copyMode {
+			m.setMsg("copy mode — drag to select, OS shortcut to copy ; Ctrl+S/Esc to exit")
+			return m, tea.DisableMouse
+		}
+		m.clearStatus()
+		return m, tea.EnableMouseCellMotion
+	case "esc":
+		if m.copyMode {
+			m.copyMode = false
+			m.clearStatus()
+			return m, tea.EnableMouseCellMotion
+		}
+		// Fall through : non-copy-mode Esc handled below / per-tab.
 	case "ctrl+b":
 		// Toggle the sidebar's collapsed (icon-only) mode. Useful
 		// on small terminals where the full catalogue + labels eat
