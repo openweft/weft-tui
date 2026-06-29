@@ -2246,10 +2246,13 @@ func isNumericShortcut(s string) bool {
 // wants the horizontal drawer to be able to rise up to (just under)
 // the main panel's content.
 //
-// Chrome budget : topbarHeight() + bodyHeight + logPane.height() + 1
-// (status bar = single line, no border anymore) == m.height.
+// Chrome budget : topbarHeight() + bodyHeight + logPane.height() + 2
+// (status bar = bordered frame, 1 content row + 1 bottom border ;
+// the top border is shared visually with the log pane's bottom
+// border). The shared visual line is owned by the log pane in this
+// accounting — operator directive 2026-06-29.
 func (m Model) bodyHeight() int {
-	h := m.height - 1 - m.logPane.height() - m.topbarHeight()
+	h := m.height - 2 - m.logPane.height() - m.topbarHeight()
 	if h < 3 {
 		h = 3
 	}
@@ -3426,26 +3429,28 @@ func (m Model) activeRefreshTS() time.Time {
 }
 
 func (m Model) renderStatusBar() string {
-	// The active-tab indicator AND the "refreshed HH:MM:SS" stamp
-	// both moved up to the topbar (2026-06-23 directive, reiterated
-	// today). The status bar now carries just the connection status
-	// + status message / help hint.
-	// Status bar : transient status messages only (success / error
-	// from a recent action). The conn ● indicator moved up to the
-	// topbar (operator directive 2026-06-23 "affiche le point avec
-	// pc en permanence avec une couleur ... dans la topbar"). The
-	// status bar's top border was also dropped — it was the "bout de
-	// ligne orphelin sous les frames" the operator flagged.
-	if m.statusMsg == "" {
-		// Render a single padded space line so the layout's height
-		// budget (- 1 row for status bar in bodyHeight()) stays
-		// constant whether or not there's a message.
-		return m.theme.StatusBar.Render("")
+	// Status bar now has a real bordered frame (operator directive
+	// 2026-06-29 : "crée une vraie zone avec frame pour l'affichage
+	// d'info en status barre"). BorderTop(false) keeps the log
+	// pane's existing bottom border as the visual top of the status
+	// bar — avoids the "decallage de la frame de la zone de tabs"
+	// (the double horizontal line the operator flagged). Total
+	// chrome rows : 1 content + 1 bottom border = 2 (was 1).
+	w := m.width - 2
+	if w < 1 {
+		w = 1
 	}
-	if m.statusErr {
-		return m.theme.StatusBar.Render(m.theme.StatusErr.Render(m.statusMsg))
+	style := m.theme.StatusBar.Width(w)
+	var inner string
+	switch {
+	case m.statusMsg == "":
+		inner = ""
+	case m.statusErr:
+		inner = m.theme.StatusErr.Render(m.statusMsg)
+	default:
+		inner = m.theme.StatusMsg.Render(m.statusMsg)
 	}
-	return m.theme.StatusBar.Render(m.theme.StatusMsg.Render(m.statusMsg))
+	return style.Render(inner)
 }
 
 // setMsg / setError / clearStatus are the tiny helpers the rest of

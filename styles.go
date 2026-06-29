@@ -83,6 +83,9 @@ func NewTheme() Theme {
 			Padding(0, 1),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(muted).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			BorderTop(false).
 			Padding(0, 1),
 		StatusKey: lipgloss.NewStyle().Bold(true).Foreground(primary),
 		StatusVal: lipgloss.NewStyle().Foreground(muted),
