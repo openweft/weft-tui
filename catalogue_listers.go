@@ -329,6 +329,38 @@ func ramToGiB(s string) int {
 	return v / 1024
 }
 
+// ramToMB is the same parser as ramToGiB but emits an MB-precision
+// result so sub-GiB shapes (256Mi, 512Mi — small infra VMs) match
+// the cache key. Bare digits and Xg/Gi units are converted to MB ;
+// Mi/Mib/m stays in its native MB unit. Returns 0 on parse failure.
+func ramToMB(s string) int {
+	if s == "" {
+		return 0
+	}
+	low := strings.ToLower(s)
+	switch {
+	case strings.HasSuffix(low, "gi") || strings.HasSuffix(low, "gib") || strings.HasSuffix(low, "g"):
+		n := strings.TrimRight(low, "gib")
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			return 0
+		}
+		return v * 1024
+	case strings.HasSuffix(low, "mi") || strings.HasSuffix(low, "mib") || strings.HasSuffix(low, "m"):
+		n := strings.TrimRight(low, "mib")
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			return 0
+		}
+		return v
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 // synthFlavors derives "in-use" flavor entries from the running
 // VM set : groups VMs by (vcpu, ram_gib), counts how many VMs share
 // the shape, and emits one synthetic row per shape. Surfaces the
