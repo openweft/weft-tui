@@ -42,24 +42,24 @@ type vmRow struct {
 	ProjectUUID string // VMInfo.project_uuid ; needed for the tenant lookup on refreshProjectColumn
 	Tenant      string
 	UUID        string
-	HostUUID string // raw VMInfo.host_uuid from the wire
-	HostName string // resolved via the hosts cache ; "" when unknown
-	AZ       string // resolved via the hosts cache (Host.AZ)
-	Rack     string // resolved via the hosts cache (Host.Rack)
-	State    string
+	HostUUID    string // raw VMInfo.host_uuid from the wire
+	HostName    string // resolved via the hosts cache ; "" when unknown
+	AZ          string // resolved via the hosts cache (Host.AZ)
+	Rack        string // resolved via the hosts cache (Host.Rack)
+	State       string
 	// Status is the operator's administrative intent
 	// ("active"/"inactive"/"draining"), orthogonal to the runtime
 	// State. 2026-06-24 VM status MVP.
-	Status   string
+	Status string
 	// Flavor is the matched compute envelope name (looked up
 	// client-side by matching (CPU, RAM) against the flavors
 	// catalogue). Empty when no flavor matches the shape exactly
 	// — VM was created with a custom envelope.
-	Flavor   string
-	Image    string
-	CPU      uint32
-	MemMB    uint64
-	IP       string
+	Flavor string
+	Image  string
+	CPU    uint32
+	MemMB  uint64
+	IP     string
 	// Restart counter + policy ceiling for the RESTARTS column.
 	// MaxRestarts=0 means no respawn policy applies → just N.
 	RestartCount uint32
@@ -334,22 +334,22 @@ func (m *vmsModel) applyVMs(resp *weftv1.ListVMsResponse, hostLookup func(uuid s
 			flavor = flavorLookup(v.Cpu, v.MemMb)
 		}
 		row := vmRow{
-			Name:        v.Name,
-			Project:     v.Project,
-			ProjectUUID: v.ProjectUuid,
-			Tenant:      tenant,
-			UUID:        v.Uuid,
-			HostUUID:    v.HostUuid,
-			HostName:    hostName,
-			AZ:          az,
-			Rack:        rack,
-			State:       state,
-			Status:      vmStatusString(v.Status),
-			Flavor:      flavor,
-			Image:       v.Image,
-			CPU:         v.Cpu,
-			MemMB:       v.MemMb,
-			IP:          v.Ip,
+			Name:         v.Name,
+			Project:      v.Project,
+			ProjectUUID:  v.ProjectUuid,
+			Tenant:       tenant,
+			UUID:         v.Uuid,
+			HostUUID:     v.HostUuid,
+			HostName:     hostName,
+			AZ:           az,
+			Rack:         rack,
+			State:        state,
+			Status:       vmStatusString(v.Status),
+			Flavor:       flavor,
+			Image:        v.Image,
+			CPU:          v.Cpu,
+			MemMB:        v.MemMb,
+			IP:           v.Ip,
 			RestartCount: v.RestartCount,
 			MaxRestarts:  v.MaxRestarts,
 		}

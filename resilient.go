@@ -149,12 +149,12 @@ func (r *ResilientClient) Close() error {
 
 // dial reaches the endpoint's weft agent via one of three transports :
 //
-//   * e.Socket alone : already-tunneled local socket. Just dial it.
-//   * e.Address + e.SSHSocket : open an in-process SSH client to the
+//   - e.Socket alone : already-tunneled local socket. Just dial it.
+//   - e.Address + e.SSHSocket : open an in-process SSH client to the
 //     remote host (golang.org/x/crypto/ssh) + use a
 //     `direct-streamlocal@openssh.com` channel as the gRPC dialer.
 //     No fork, no /tmp socket, no `pkill` cleanup. See sshdial.go.
-//   * Legacy e.Address + e.SSHKey (no SSHSocket) : the agent's
+//   - Legacy e.Address + e.SSHKey (no SSHSocket) : the agent's
 //     in-process SSH-server transport (weftclient.WithSSH). Kept
 //     for backwards compat ; not used by the operator-side flow.
 //

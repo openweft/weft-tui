@@ -766,9 +766,9 @@ func listVolumeBackups(ctx context.Context, c weftv1.WeftAgentClient) ([]map[str
 	out := make([]map[string]any, 0, len(resp.Backups))
 	for _, b := range resp.Backups {
 		out = append(out, map[string]any{
-			"uuid": b.Url, // backups are keyed by url, not uuid — alias for the table
-			"url":  b.Url,
-			"name": b.Url, // no Name field ; show the url in the name column
+			"uuid":        b.Url, // backups are keyed by url, not uuid — alias for the table
+			"url":         b.Url,
+			"name":        b.Url, // no Name field ; show the url in the name column
 			"volume_uuid": b.VolumeUuid,
 			"size_gib":    b.SizeBytes / (1024 * 1024 * 1024),
 			"status":      b.State,

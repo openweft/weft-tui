@@ -305,7 +305,7 @@ func (m Model) Init() tea.Cmd {
 // given resource detail row. Matches by :
 //
 //   - "azs"   : host.AZ == row["code"] (AZ entries use code as their
-//               canonical short name, mirrored in HostInfo.AZ)
+//     canonical short name, mirrored in HostInfo.AZ)
 //   - "racks" : host.Rack == row["code"] (same convention)
 //
 // Any other resource ID returns nil so the resource detail drawer
@@ -2246,8 +2246,9 @@ func isNumericShortcut(s string) bool {
 // include their own borders).
 //
 // Solving total == m.height :
-//   topbarHeight + bodyHeight + logPane.height + 2 == m.height
-//   bodyHeight = m.height - 2 - logPane.height() - topbarHeight()
+//
+//	topbarHeight + bodyHeight + logPane.height + 2 == m.height
+//	bodyHeight = m.height - 2 - logPane.height() - topbarHeight()
 //
 // topbarHeight() reads renderTopbar()'s line count at runtime so any
 // future change to the topbar's framing automatically reflows the
@@ -2277,8 +2278,8 @@ func (m Model) bodyHeight() int {
 // their borders). Sidebar rendered = sidebarInner + 2 (rounded
 // border). Solving for parity :
 //
-//   sidebarInner + 2 = bodyHeight + logPane.height
-//   sidebarInner    = bodyHeight + logPane.height - 2
+//	sidebarInner + 2 = bodyHeight + logPane.height
+//	sidebarInner    = bodyHeight + logPane.height - 2
 func (m Model) sidebarInnerHeight() int {
 	h := m.bodyHeight() + m.logPane.height() - 2
 	if h < 5 {
@@ -2603,10 +2604,10 @@ func (m Model) renderContextMenuFloating() string {
 // decallage"). This version trades style fidelity on the 6 overlaid
 // lines for ROCK-SOLID alignment :
 //
-//   1. Strip ANSI from base → plain text.
-//   2. Pad plain to `width` so anchorX + overlayWidth always fits.
-//   3. Re-render the line as : plain[0:anchorX] + overlay +
-//      plain[anchorX+overlayWidth:].
+//  1. Strip ANSI from base → plain text.
+//  2. Pad plain to `width` so anchorX + overlayWidth always fits.
+//  3. Re-render the line as : plain[0:anchorX] + overlay +
+//     plain[anchorX+overlayWidth:].
 //
 // The 6 lines under the menu lose their original colors (they
 // re-render as plain text + the menu's styled box on top). Operators
@@ -2674,7 +2675,9 @@ func overlayLineAt(base, overlay string, anchorX, width int) string {
 // closes the menu instead of dispatching.
 //
 // Layout (relative to terminal Y) :
-//   row N-K to N-1 : menu items + footer + border
+//
+//	row N-K to N-1 : menu items + footer + border
+//
 // where N is the terminal height + the menu has K=len(items)+1
 // content rows + 2 border rows (HelpBox has padding 1,2).
 func (m Model) menuHitRow(y int) (int, bool) {
@@ -3061,9 +3064,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			actionBarY := m.topbarHeight() + 1
 			if msg.Y == actionBarY {
 				localX := msg.X - m.sidebarWidth()
-				const actionsLen = 7   // "Actions"
-				const sepLen = 2       // "  "
-				const refreshLen = 7   // "Refresh"
+				const actionsLen = 7 // "Actions"
+				const sepLen = 2     // "  "
+				const refreshLen = 7 // "Refresh"
 				switch {
 				case localX >= 0 && localX < actionsLen:
 					// Open the context menu — same effect as `a`.

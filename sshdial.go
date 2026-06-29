@@ -218,14 +218,14 @@ func sshAuthMethods(keyPath string) ([]ssh.AuthMethod, error) {
 // sshHostKeyCallback returns a HostKeyCallback that verifies against
 // ~/.ssh/known_hosts. Three regimes :
 //
-//   * SSH_TUI_STRICT_HOSTKEY=1 : fail-closed on any unknown or
+//   - SSH_TUI_STRICT_HOSTKEY=1 : fail-closed on any unknown or
 //     mismatching host. Production policy.
-//   * known_hosts present (default) : reject only on a true key
+//   - known_hosts present (default) : reject only on a true key
 //     mismatch (potential MITM) ; accept unknown hosts TOFU-style
 //     so dev VMs that get recreated don't break the operator's
 //     daily flow. The accepted key is NOT auto-written to the file
 //     (the OpenSSH client already covers that ergonomic).
-//   * known_hosts missing : InsecureIgnoreHostKey ; the operator
+//   - known_hosts missing : InsecureIgnoreHostKey ; the operator
 //     never ran ssh from this account before.
 func sshHostKeyCallback() (ssh.HostKeyCallback, error) {
 	strict := os.Getenv("SSH_TUI_STRICT_HOSTKEY") == "1"

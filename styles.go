@@ -9,11 +9,11 @@ import "github.com/charmbracelet/lipgloss"
 // Theme is the bundle of styles consumed by every view. Built once
 // at process start (NewTheme) ; never mutated.
 type Theme struct {
-	Title      lipgloss.Style
+	Title lipgloss.Style
 	// Tab + ActiveTab dead since the top-of-screen tabs header
 	// was replaced by the sidebar (catalogue navigation now in
 	// the left rail). Kept removed per audit 2026-06-25.
-	StatusBar lipgloss.Style
+	StatusBar  lipgloss.Style
 	StatusKey  lipgloss.Style
 	StatusVal  lipgloss.Style
 	StatusMsg  lipgloss.Style

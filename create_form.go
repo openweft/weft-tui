@@ -46,11 +46,11 @@ type EditFn func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]a
 // Used for both Create (n) and Edit (e) ; editMode + editRow
 // distinguish.
 type createFormModel struct {
-	fields   []FormField
-	inputs   []textinput.Model
-	focus    int
-	errMsg   string
-	cfg      ResourceConfig
+	fields []FormField
+	inputs []textinput.Model
+	focus  int
+	errMsg string
+	cfg    ResourceConfig
 	// editMode flips the form into Edit dispatch : on submit, the
 	// editSubmitMsg fires instead of createSubmitMsg + the
 	// ResourceListModel calls cfg.EditFn(row, values) rather than

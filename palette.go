@@ -161,12 +161,12 @@ func (p *paletteModel) handleKey(msg tea.KeyMsg) (cmd tea.Cmd, switchTo string) 
 //
 // Layout (anchored bottom of viewport, app.go positions it) :
 //
-//   : <input>_                              ← prompt line
-//   ▸ networks          Network             ← matched entries, one
-//     subnets           Network             per line. Selected one
-//     volumes           Storage             is marked with ▸ and
-//     ...                                   rendered in BadgeOK
-//                                           (green).
+//	: <input>_                              ← prompt line
+//	▸ networks          Network             ← matched entries, one
+//	  subnets           Network             per line. Selected one
+//	  volumes           Storage             is marked with ▸ and
+//	  ...                                   rendered in BadgeOK
+//	                                        (green).
 //
 // The Section column on the right helps disambiguate when two
 // resources share a prefix (Network vs Storage vs Identity, etc).
