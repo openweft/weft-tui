@@ -134,6 +134,27 @@ func (p *logPane) append(level, msg string) {
 }
 
 // refresh re-renders the buffered entries into the viewport content.
+// logLevelStyle maps a log level token to the colour the pane
+// renders its tag in. Matches the operator's directive 2026-06-29 :
+// red for error, green for info, orange for debug ; yellow for warn
+// because that's the universal in-between cue. Unknown levels fall
+// through to the default colour so a typo surfaces visually as
+// "uncoloured" rather than crashing the renderer.
+func logLevelStyle(level string) lipgloss.Style {
+	switch level {
+	case ResilientEventError, "ERROR":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+	case ResilientEventWarn, "WARN":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+	case ResilientEventInfo, "INFO":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
+	case "DEBUG", "debug":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FB923C"))
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
 // Called after append and after a theme/resize change.
 func (p *logPane) refresh() {
 	var b strings.Builder
@@ -141,7 +162,13 @@ func (p *logPane) refresh() {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s  %-5s  %s", e.ts.Format("15:04:05"), e.level, e.msg)
+		// Pad the level to 5 columns BEFORE colour-styling so the
+		// ANSI escapes don't shift the msg column. Operator
+		// directive 2026-06-29 : "met de la couleur sur le
+		// type/tag de message. erreur en rouge, info en vert,
+		// debug en orange".
+		label := fmt.Sprintf("%-5s", e.level)
+		fmt.Fprintf(&b, "%s  %s  %s", e.ts.Format("15:04:05"), logLevelStyle(e.level).Render(label), e.msg)
 	}
 	p.vp.SetContent(b.String())
 	if p.follow {
