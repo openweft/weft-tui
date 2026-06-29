@@ -1382,8 +1382,11 @@ func (m Model) handleVMsKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
 		// Restart : single atomic RPC (weft-proto v0.12.0+). The
 		// agent rollbacks (restart on same host w/ same network)
 		// if the start leg fails — something the prior client-side
-		// stop+start chain couldn't offer.
-		return m, restartVMCmd(m.client, name, project)
+		// stop+start chain couldn't offer. HostUuid carries the
+		// row's owning host so cross-DC restarts dispatch over
+		// AgentDispatch / etcd-jobs instead of falling into the
+		// local-default-project resolver.
+		return m, restartVMCmd(m.client, name, project, m.vms.selectedHostUUID())
 	case "l":
 		name, project := m.vms.selected()
 		if name == "" {
@@ -2800,7 +2803,7 @@ func (m Model) buildContextMenu() []contextMenuItem {
 		}
 		return []contextMenuItem{
 			{label: "Start", shortcut: "s", action: startVMCmd(m.client, name, project)},
-			{label: "Restart", shortcut: "R", action: restartVMCmd(m.client, name, project)},
+			{label: "Restart", shortcut: "R", action: restartVMCmd(m.client, name, project, m.vms.selectedHostUUID())},
 			{label: "Stop…", shortcut: "S", action: openVMConfirmStopCmd(name, project)},
 			{label: "Activate", shortcut: "a", action: setVMStatusCmd(m.client, uuid, name, project, "active")},
 			{label: "Inactivate", shortcut: "i", action: setVMStatusCmd(m.client, uuid, name, project, "inactive")},

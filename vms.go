@@ -232,6 +232,22 @@ func (m *vmsModel) selected() (name, project string) {
 	return m.rows[idx].Name, m.rows[idx].Project
 }
 
+// selectedHostUUID returns the owning host UUID of the cursor row,
+// or "" when no row is selected / placement is unknown. The Restart
+// action threads this into RestartVMRequest.HostUuid so the server
+// can dispatch to the owning agent instead of falling into the
+// local-default-project trap on cross-host VMs.
+func (m *vmsModel) selectedHostUUID() string {
+	if len(m.rows) == 0 {
+		return ""
+	}
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.rows) {
+		return ""
+	}
+	return m.rows[idx].HostUUID
+}
+
 // selectedUUID returns the UUID of the currently-selected VM, or
 // "" when nothing's selected. UUID is the stable handle the
 // SetVMStatus RPC uses (survives renames).
@@ -626,14 +642,20 @@ func stopVMCmd(client VMsClient, name, project string) tea.Cmd {
 // agent rollbacks (restarts on the same host with the same network
 // attachments) when the start half fails — something the client-side
 // chain couldn't offer.
-func restartVMCmd(client VMsClient, name, project string) tea.Cmd {
+//
+// hostUUID is the row's resolved owning host UUID ; empty means "let
+// the server execute locally". For cross-DC VMs the local resolver
+// defaults to the caller's user project, which produces
+// "kernel not found at state/vz/<usr-admin>/<vm>" — the bug operator
+// reported 2026-06-29 on redis-ha replicas pinned to dc2/dc3.
+func restartVMCmd(client VMsClient, name, project, hostUUID string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return vmActionMsg{action: "restart", name: name, project: project, err: errNoClient}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		_, err := client.RestartVM(ctx, &weftv1.RestartVMRequest{Name: name, Project: project})
+		_, err := client.RestartVM(ctx, &weftv1.RestartVMRequest{Name: name, Project: project, HostUuid: hostUUID})
 		return vmActionMsg{action: "restart", name: name, project: project, err: err}
 	}
 }
