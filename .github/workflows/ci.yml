@@ -5,6 +5,10 @@ name: ci
 # operator's two reference platforms (Linux arm64 for the 3-DC
 # debian fleet ; Darwin arm64 for the Mac laptop). Push + PR
 # only — no publishing, no tag gating.
+#
+# go.mod carries `replace github.com/openweft/weft-proto =>
+# ../weft-proto` for the sibling-dev workflow. Every job checks
+# the proto repo out next to weft-tui so the replace resolves.
 
 on:
   push:
@@ -21,13 +25,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: weft-tui
+
+      - uses: actions/checkout@v7
+        with:
+          repository: openweft/weft-proto
+          path: weft-proto
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: weft-tui/go.mod
           cache: true
+          cache-dependency-path: weft-tui/go.sum
 
       - name: gofmt check
+        working-directory: weft-tui
         run: |
           out=$(gofmt -l .)
           if [ -n "$out" ]; then
@@ -37,9 +50,11 @@ jobs:
           fi
 
       - name: go vet
+        working-directory: weft-tui
         run: go vet ./...
 
       - name: go test -race
+        working-directory: weft-tui
         run: go test -race -count=1 -timeout 5m ./...
 
   cross-build:
@@ -54,13 +69,22 @@ jobs:
           - { goos: darwin, goarch: arm64 }   # operator laptop
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: weft-tui
+
+      - uses: actions/checkout@v7
+        with:
+          repository: openweft/weft-proto
+          path: weft-proto
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: weft-tui/go.mod
           cache: true
+          cache-dependency-path: weft-tui/go.sum
 
       - name: build
+        working-directory: weft-tui
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
