@@ -295,9 +295,9 @@ func padLogPaneBody(body string, vpHeight int) string {
 // browser tabs anchored to their content.
 //
 // The strip occupies 3 lines :
-//   1. Tab top borders (`╭──╮`)
-//   2. Tab content (`│ Logs │`)
-//   3. Stitched bottom rule (`╰──╯╰─...╯─────`)
+//  1. Tab top borders (`╭──╮`)
+//  2. Tab content (`│ Logs │`)
+//  3. Stitched bottom rule (`╰──╯╰─...╯─────`)
 //
 // logPane.height() accounts for these 3 lines.
 func (p logPane) renderTabStrip(theme Theme, width int) string {
@@ -453,12 +453,14 @@ func (p *logPane) switchTab(id string) {
 }
 
 // height is the row count the pane occupies in the parent layout :
-//   1 (LogPaneBox top border)
-//   + 2 (tab strip : top border + label row of the tab boxes ;
-//        the bottom border is rendered by the stitched rule below)
-//   + 1 (stitched rule : tabs' bottom edges + pane separator)
-//   + vp.Height
-//   + 1 (LogPaneBox bottom border)
+//
+//	1 (LogPaneBox top border)
+//	+ 2 (tab strip : top border + label row of the tab boxes ;
+//	     the bottom border is rendered by the stitched rule below)
+//	+ 1 (stitched rule : tabs' bottom edges + pane separator)
+//	+ vp.Height
+//	+ 1 (LogPaneBox bottom border)
+//
 // Centralised so bodyHeight() can subtract it cleanly.
 func (p logPane) height() int {
 	// 1 (top border = divider) + 3 (strip top+label+rule) + vp +

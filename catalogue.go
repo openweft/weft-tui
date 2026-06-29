@@ -84,7 +84,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 20}, {Title: "CIDR", Width: 18},
 			{Title: "TYPE", Width: 10}, {Title: "PROJECT", Width: 18},
 		},
-		List:       listNetworks,
+		List: listNetworks,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "cidr"), s(r, "type"), s(r, "project_uuid")}
 		},
@@ -118,7 +118,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NETWORK_UUID", Width: 36},
 			{Title: "PROJECT_UUID", Width: 36},
 		},
-		List:       listSubnets,
+		List: listSubnets,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "cidr"), s(r, "network_uuid"), s(r, "project_uuid")}
 		},
@@ -173,7 +173,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 20}, {Title: "SIZE-GIB", Width: 10},
 			{Title: "FORMAT", Width: 10}, {Title: "PROJECT", Width: 18}, {Title: "ATTACHED", Width: 18},
 		},
-		List:       listVolumes,
+		List: listVolumes,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), iStr(r["size_gib"]), s(r, "format"), s(r, "project_uuid"), s(r, "attached_to_uuid")}
 		},
@@ -214,7 +214,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 20}, {Title: "BACKEND", Width: 10},
 			{Title: "SIZE-GB", Width: 10}, {Title: "PROJECT", Width: 18}, {Title: "STATUS", Width: 12},
 		},
-		List:       listShares,
+		List: listShares,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "backend"), iStr(r["size_gb"]), s(r, "project_uuid"), s(r, "status")}
 		},
@@ -279,7 +279,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 22}, {Title: "ENDPOINT", Width: 32},
 			{Title: "REGION", Width: 14}, {Title: "PROJECT", Width: 18},
 		},
-		List:       listBuckets,
+		List: listBuckets,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "endpoint"), s(r, "region"), s(r, "project_uuid")}
 		},
@@ -317,7 +317,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "MAPPED-TO", Width: 22},
 			{Title: "PROJECT_UUID", Width: 36},
 		},
-		List:       listFloatingIPs,
+		List: listFloatingIPs,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "address"), s(r, "network_uuid"), s(r, "mapped_to_uuid"), s(r, "project_uuid")}
 		},
@@ -352,7 +352,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 20}, {Title: "FRONTEND", Width: 22},
 			{Title: "BACKENDS", Width: 10}, {Title: "PROJECT", Width: 18},
 		},
-		List:       listLoadBalancers,
+		List: listLoadBalancers,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "frontend"), iStr(r["backends_count"]), s(r, "project_uuid")}
 		},
@@ -401,7 +401,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 30}, {Title: "TTL", Width: 8},
 			{Title: "PROJECT", Width: 18},
 		},
-		List:       listDNSZones,
+		List: listDNSZones,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), iStr(r["default_ttl"]), s(r, "project_uuid")}
 		},
@@ -453,7 +453,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 22}, {Title: "TYPE", Width: 8},
 			{Title: "VALUE", Width: 30}, {Title: "ZONE", Width: 22},
 		},
-		List:       listDNSRecords,
+		List: listDNSRecords,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "type"), s(r, "value"), s(r, "zone_uuid")}
 		},
@@ -515,7 +515,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 22}, {Title: "DESCRIPTION", Width: 32},
 			{Title: "PROJECT", Width: 18},
 		},
-		List:       listSecurityGroups,
+		List: listSecurityGroups,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "description"), s(r, "project_uuid")}
 		},
@@ -560,7 +560,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 24}, {Title: "SELECTOR", Width: 28},
 			{Title: "TARGET", Width: 8},
 		},
-		List:       listSchedulingRules,
+		List: listSchedulingRules,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "selector"), iStr(r["target_count"])}
 		},
@@ -628,7 +628,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "EMAIL", Width: 30}, {Title: "DISPLAY", Width: 22},
 			{Title: "ISSUER", Width: 24},
 		},
-		List:       listUsers,
+		List: listUsers,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "email"), s(r, "display_name"), s(r, "oidc_issuer")}
 		},
@@ -644,7 +644,7 @@ var resourceCatalogue = []ResourceConfig{
 		Columns: []table.Column{
 			{Title: "NAME", Width: 22}, {Title: "FINGERPRINT", Width: 50}, {Title: "SOURCE", Width: 12},
 		},
-		List:       listSSHKeyCatalogue,
+		List: listSSHKeyCatalogue,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "fingerprint"), s(r, "source")}
 		},
@@ -1016,7 +1016,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 24}, {Title: "VOLUME", Width: 22},
 			{Title: "SIZE-GIB", Width: 10}, {Title: "PROJECT", Width: 18},
 		},
-		List:       listVolumeSnapshots,
+		List: listVolumeSnapshots,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "volume_uuid"), iStr(r["size_gib"]), s(r, "project_uuid")}
 		},
@@ -1036,7 +1036,7 @@ var resourceCatalogue = []ResourceConfig{
 			{Title: "NAME", Width: 24}, {Title: "VOLUME", Width: 22},
 			{Title: "SIZE-GIB", Width: 10}, {Title: "STATUS", Width: 12},
 		},
-		List:       listVolumeBackups,
+		List: listVolumeBackups,
 		RowToCells: func(r map[string]any) []string {
 			return []string{s(r, "name"), s(r, "volume_uuid"), iStr(r["size_gib"]), s(r, "status")}
 		},

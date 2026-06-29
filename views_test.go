@@ -269,10 +269,10 @@ func TestStripANSI_RemovesCSI(t *testing.T) {
 // one row above the row the operator pointed at.
 //
 // The test :
-//   1. Builds a Model + drives a WindowSizeMsg so geometry is set.
-//   2. Asks sidebarHitRows() for the relative Y of the VMs entry.
-//   3. Sends a MouseMsg at ABSOLUTE Y = relativeY + topbarHeight().
-//   4. Asserts the active tab flipped to VMs.
+//  1. Builds a Model + drives a WindowSizeMsg so geometry is set.
+//  2. Asks sidebarHitRows() for the relative Y of the VMs entry.
+//  3. Sends a MouseMsg at ABSOLUTE Y = relativeY + topbarHeight().
+//  4. Asserts the active tab flipped to VMs.
 //
 // A future regression that drops the topbarHeight() subtraction (or
 // drops it again on log-pane wheel handling, etc.) flips this test

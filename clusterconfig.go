@@ -80,10 +80,10 @@ type Endpoint struct {
 }
 
 // LoadClustersConfig reads the operator's clusters.hcl. Lookup order :
-//   1. $WEFT_TUI_CONFIG (operator override)
-//   2. $XDG_CONFIG_HOME/weft/clusters.hcl
-//   3. ~/.config/weft/clusters.hcl
-//   4. ~/.weft/clusters.hcl
+//  1. $WEFT_TUI_CONFIG (operator override)
+//  2. $XDG_CONFIG_HOME/weft/clusters.hcl
+//  3. ~/.config/weft/clusters.hcl
+//  4. ~/.weft/clusters.hcl
 //
 // Returns nil + nil error when no file is present so the caller can
 // fall back to the --socket flag.

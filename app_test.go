@@ -1304,8 +1304,8 @@ func TestResource_DetailDrawerSwallowsActionKeys(t *testing.T) {
 	called := false
 	cfg := ResourceConfig{
 		ID: "x", Title: "X", Section: "X",
-		Columns: []table.Column{{Title: "K", Width: 10}},
-		List:    func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		Columns:    []table.Column{{Title: "K", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
 		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
 		Actions: []ResourceAction{
 			{Key: "d", Label: "del", Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {

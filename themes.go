@@ -23,13 +23,13 @@ import (
 // theme reads well on either terminal background — same convention
 // styles.go has always followed.
 type ThemePreset struct {
-	Name      string
-	Primary   lipgloss.AdaptiveColor // titles, active tab, prompt prefix
-	Muted     lipgloss.AdaptiveColor // tabs, faint, status bar
-	OK        lipgloss.AdaptiveColor // success badges + matching messages
-	Warn      lipgloss.AdaptiveColor // warning badges
-	Bad       lipgloss.AdaptiveColor // error badges, confirm-box border
-	Border    lipgloss.AdaptiveColor // box borders, status-bar separator
+	Name    string
+	Primary lipgloss.AdaptiveColor // titles, active tab, prompt prefix
+	Muted   lipgloss.AdaptiveColor // tabs, faint, status bar
+	OK      lipgloss.AdaptiveColor // success badges + matching messages
+	Warn    lipgloss.AdaptiveColor // warning badges
+	Bad     lipgloss.AdaptiveColor // error badges, confirm-box border
+	Border  lipgloss.AdaptiveColor // box borders, status-bar separator
 }
 
 // themePresets is the catalogue. Order = cycle order on `T`.
@@ -63,7 +63,7 @@ var themePresets = []ThemePreset{
 		Border:  lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"},
 	},
 	{
-		Name:    "violet",
+		Name: "violet",
 		// Original pre-v0.3.3 hues, kept as an opt-in for operators
 		// who liked the look.
 		Primary: lipgloss.AdaptiveColor{Light: "#5B21B6", Dark: "#A78BFA"},
@@ -74,7 +74,7 @@ var themePresets = []ThemePreset{
 		Border:  lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"},
 	},
 	{
-		Name:    "mono",
+		Name: "mono",
 		// Monochrome — for screenshots, low-contrast terminals,
 		// accessibility. Primary distinguished only by weight.
 		Primary: lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F3F4F6"},

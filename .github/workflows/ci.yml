@@ -1,0 +1,68 @@
+name: ci
+
+# Pure-Go TUI ; no kernel / netlink / hypervisor deps. CI just
+# vets, tests with the race detector, and cross-builds for the
+# operator's two reference platforms (Linux arm64 for the 3-DC
+# debian fleet ; Darwin arm64 for the Mac laptop). Push + PR
+# only — no publishing, no tag gating.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt check
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt drift in :"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -count=1 -timeout 5m ./...
+
+  cross-build:
+    name: cross-build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,  goarch: arm64 }   # 3-DC reference
+          - { goos: linux,  goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }   # operator laptop
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/weft-tui-${{ matrix.goos }}-${{ matrix.goarch }} .
