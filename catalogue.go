@@ -29,6 +29,51 @@ func faintRowCells(in []string) []string {
 	return out
 }
 
+// pluginInstallFields builds the install-action form for a Plugins
+// view row. The catalogue lister stores the agent's PluginInput list
+// under row["inputs"] as a []*weftv1.PluginInput ; we surface every
+// required input plus an optional "project" override at the top.
+// Returns nil when the row is uninstallable (state != available) or
+// when the catalogue served no input schema — the action's Do then
+// runs the no-form path (project=infra, empty inputs) and the agent
+// rejects loudly if mandatory inputs are missing.
+func pluginInstallFields(row map[string]any) []FormField {
+	if s(row, "state") != "available" {
+		return nil
+	}
+	inputs, _ := row["inputs"].([]*weftv1.PluginInput)
+	fields := []FormField{
+		{Key: "project", Label: "Project", Placeholder: "infra"},
+	}
+	for _, in := range inputs {
+		if in == nil {
+			continue
+		}
+		// Skip optional inputs with a default — operators can still
+		// override on the CLI ; the TUI form would only show clutter
+		// otherwise. Required inputs always appear ; required-with-
+		// default appears too so the operator sees what's about to
+		// be applied.
+		if !in.Required && in.Default != "" {
+			continue
+		}
+		f := FormField{
+			Key:         in.Name,
+			Label:       in.Name,
+			Placeholder: in.Default,
+			Required:    in.Required,
+		}
+		if in.Help != "" {
+			f.Label = in.Name + " — " + in.Help
+		}
+		if in.Type == "int" {
+			f.Numeric = true
+		}
+		fields = append(fields, f)
+	}
+	return fields
+}
+
 // resourceCatalogue is the registry consulted by the command
 // palette. ID matches the slug the user types after `:` (e.g.
 // `:networks`, `:volumes`).
@@ -837,6 +882,18 @@ var resourceCatalogue = []ResourceConfig{
 			{
 				Key:   "i",
 				Label: "install",
+				// Fields produces a per-plugin form from the
+				// PluginInput list the catalogue lister attached to
+				// the row. Required + non-secret + no-default
+				// inputs become FormFields ; everything else is
+				// either pre-resolved by the agent (defaults) or
+				// not surfaced in the form (secrets prompt the
+				// operator to supply via a separate flow). Plus a
+				// "project" field that's mandatory on the wire.
+				// Returns no fields when the plugin has no required
+				// inputs — the dispatch falls through to the
+				// direct Do path with project="infra".
+				Fields: pluginInstallFields,
 				Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
 					name := s(row, "name")
 					if name == "" {
@@ -845,18 +902,26 @@ var resourceCatalogue = []ResourceConfig{
 					if s(row, "state") != "available" {
 						return "", fmt.Errorf("plugin %q is already installed (state=%s)", name, s(row, "state"))
 					}
-					// Project resolution V1 : default to "infra" — that's
-					// where every HA plugin in the openweft reference
-					// stack lands (postgres-ha, irods-ha, redis-ha, …).
-					// Per-plugin input prompting is a follow-up : the
-					// catalogue HCL declares required inputs but the
-					// TUI doesn't surface a form here yet. The agent
-					// returns a clear error (codes.InvalidArgument :
-					// "input X is required") when a mandatory input
-					// is missing — the status bar shows it verbatim.
+					// Form values land under "_form_values" when the
+					// action opened the modal first. Project defaults
+					// to "infra" so the form-less path (plugins with no
+					// required inputs) stays installable in one keypress.
+					values, _ := row["_form_values"].(map[string]string)
+					project := "infra"
+					if v := values["project"]; v != "" {
+						project = v
+					}
+					inputs := make(map[string]string, len(values))
+					for k, v := range values {
+						if k == "project" || v == "" {
+							continue
+						}
+						inputs[k] = v
+					}
 					resp, err := c.InstallPlugin(ctx, &weftv1.InstallPluginRequest{
 						Name:    name,
-						Project: "infra",
+						Project: project,
+						Inputs:  inputs,
 					})
 					if err != nil {
 						return "", fmt.Errorf("InstallPlugin %s: %w", name, err)

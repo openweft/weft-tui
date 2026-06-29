@@ -665,6 +665,12 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 	// through to the static list so the operator always sees what
 	// could be installed — same UX principle as the webui's
 	// /api/plugins/catalogue (cf. feedback_static_catalogue_fallback).
+	//
+	// "inputs" is preserved on each available row so the `i` install
+	// action's Fields function can produce a per-plugin prompt
+	// without a second RPC. Stored as []*weftv1.PluginInput so the
+	// downstream type assertion stays explicit ; consumers should
+	// nil-check before iterating since the static fallback omits it.
 	if catErr == nil && len(catResp.Entries) > 0 {
 		for _, e := range catResp.Entries {
 			if installed[e.Name] {
@@ -677,6 +683,7 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 				"kind":         e.Kind,
 				"state":        "available",
 				"project_uuid": "",
+				"inputs":       e.Inputs,
 			})
 		}
 	} else {
@@ -691,6 +698,11 @@ func listInstalledPlugins(ctx context.Context, c weftv1.WeftAgentClient) ([]map[
 				"kind":         e.Kind,
 				"state":        "available",
 				"project_uuid": "",
+				// staticPluginCatalogue carries no input schema ;
+				// the install action handles a nil/empty list by
+				// installing with no inputs (agent will reject if
+				// the plugin needs any, surfacing the error
+				// straight to the operator).
 			})
 		}
 	}

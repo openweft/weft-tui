@@ -1414,3 +1414,160 @@ func TestResource_CreateFormEscClosesAndDiscards(t *testing.T) {
 		t.Errorf("CreateFn should not be called on cancel")
 	}
 }
+
+// TestResource_ActionFieldsOpensForm covers the new per-row form
+// dispatch : an action whose Fields function returns >0 entries must
+// open the form modal on its keypress instead of calling Do directly.
+// Submitting the form must fire Do with the values folded into the
+// row under "_form_values" so the closure can read them.
+func TestResource_ActionFieldsOpensForm(t *testing.T) {
+	var got map[string]any
+	cfg := ResourceConfig{
+		ID: "x", Title: "X", Section: "X",
+		Columns:    []table.Column{{Title: "NAME", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+		Actions: []ResourceAction{{
+			Key:   "i",
+			Label: "install",
+			Fields: func(row map[string]any) []FormField {
+				return []FormField{{Key: "project", Label: "Project"}, {Key: "domain", Label: "Domain", Required: true}}
+			},
+			Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+				got = row
+				return "installed", nil
+			},
+		}},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha"}})
+
+	// `i` must open the form (not fire Do yet).
+	rm, _ = rm.Update(keyMsg('i'))
+	if rm.create == nil {
+		t.Fatalf("action with Fields should open the form on keypress")
+	}
+	if !rm.create.actionMode || rm.create.actionKey != "i" {
+		t.Fatalf("form actionMode=%v actionKey=%q ; want true/i", rm.create.actionMode, rm.create.actionKey)
+	}
+	if got != nil {
+		t.Errorf("Do fired before form submit ; got=%v", got)
+	}
+
+	// Fill both fields + submit. The form collects values in field order.
+	rm.create.inputs[0].SetValue("infra")
+	rm.create.inputs[1].SetValue("example.com")
+	_, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("Enter on filled form should emit submit Cmd")
+	}
+	// submit Cmd produces actionFormSubmitMsg ; drive it through the model.
+	msg := cmd()
+	subm, ok := msg.(actionFormSubmitMsg)
+	if !ok {
+		t.Fatalf("submit msg = %T ; want actionFormSubmitMsg", msg)
+	}
+	if subm.actionKey != "i" {
+		t.Errorf("submit actionKey = %q ; want i", subm.actionKey)
+	}
+	if subm.values["project"] != "infra" || subm.values["domain"] != "example.com" {
+		t.Errorf("submit values = %+v ; want project=infra domain=example.com", subm.values)
+	}
+
+	// Feed the submit back into Update : it must close the form +
+	// emit a Cmd that runs Do with the row + folded _form_values.
+	rm, cmd = rm.Update(subm)
+	if rm.create != nil {
+		t.Errorf("form should close on submit")
+	}
+	if cmd == nil {
+		t.Fatalf("submit handler should return a Cmd that fires Do")
+	}
+	// Run the Cmd : the inner action Do executes synchronously.
+	if out := cmd(); out == nil {
+		t.Errorf("Do Cmd returned nil msg")
+	}
+	if got == nil {
+		t.Fatal("Do was not called after submit")
+	}
+	v, _ := got["_form_values"].(map[string]string)
+	if v["project"] != "infra" || v["domain"] != "example.com" {
+		t.Errorf("Do received _form_values=%+v ; want project=infra domain=example.com", v)
+	}
+	if got["name"] != "alpha" {
+		t.Errorf("Do row identity lost ; name=%v want alpha", got["name"])
+	}
+}
+
+// TestResource_ActionFieldsEmptyFallsThroughToDirectPath : when the
+// Fields function returns an empty slice (e.g. a plugin that has no
+// required inputs), the action must run synchronously instead of
+// opening an empty form. Guards against a foot-gun where adding
+// Fields permanently breaks an action that previously worked
+// inputs-less.
+func TestResource_ActionFieldsEmptyFallsThroughToDirectPath(t *testing.T) {
+	called := 0
+	cfg := ResourceConfig{
+		ID: "x", Title: "X", Section: "X",
+		Columns:    []table.Column{{Title: "NAME", Width: 10}},
+		List:       func(ctx context.Context, c weftv1.WeftAgentClient) ([]map[string]any, error) { return nil, nil },
+		RowToCells: func(r map[string]any) []string { return []string{s(r, "name")} },
+		Actions: []ResourceAction{{
+			Key:    "i",
+			Label:  "install",
+			Fields: func(row map[string]any) []FormField { return nil },
+			Do: func(ctx context.Context, c weftv1.WeftAgentClient, row map[string]any) (string, error) {
+				called++
+				return "ok", nil
+			},
+		}},
+	}
+	rm := newResourceListModel(NewTheme(), nil, cfg)
+	rm.applyRows([]map[string]any{{"uuid": "u-1", "name": "alpha"}})
+
+	rm, cmd := rm.Update(keyMsg('i'))
+	if rm.create != nil {
+		t.Errorf("empty Fields should NOT open the form")
+	}
+	if cmd == nil {
+		t.Fatalf("empty Fields should still produce a Cmd that runs Do")
+	}
+	_ = cmd()
+	if called != 1 {
+		t.Errorf("Do called %d times ; want 1", called)
+	}
+}
+
+// TestPluginInstallFields_ShapesFromRow checks the helper that
+// derives a form from a plugins-view row. Mirrors the agent's input
+// schema : required without default → field surfaces ; optional with
+// default → omitted ; "project" is always prepended.
+func TestPluginInstallFields_ShapesFromRow(t *testing.T) {
+	row := map[string]any{
+		"state": "available",
+		"inputs": []*weftv1.PluginInput{
+			{Name: "domain", Required: true, Help: "DNS name"},
+			{Name: "replicas", Type: "int", Default: "3"},
+			{Name: "tls_cert", Required: true},
+		},
+	}
+	fields := pluginInstallFields(row)
+	if len(fields) != 3 {
+		t.Fatalf("got %d fields, want 3 (project + 2 required)", len(fields))
+	}
+	if fields[0].Key != "project" {
+		t.Errorf("first field = %q ; want project", fields[0].Key)
+	}
+	// Required-with-help inherits the help text in the label.
+	if fields[1].Key != "domain" || fields[1].Label != "domain — DNS name" || !fields[1].Required {
+		t.Errorf("domain field = %+v", fields[1])
+	}
+	if fields[2].Key != "tls_cert" || !fields[2].Required {
+		t.Errorf("tls_cert field = %+v", fields[2])
+	}
+
+	// Not-available rows produce no form.
+	if got := pluginInstallFields(map[string]any{"state": "running"}); got != nil {
+		t.Errorf("running row should produce nil fields ; got %+v", got)
+	}
+}
