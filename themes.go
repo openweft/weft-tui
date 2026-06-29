@@ -98,6 +98,9 @@ func NewThemeWith(p ThemePreset) Theme {
 			Padding(0, 1),
 		StatusBar: lipgloss.NewStyle().
 			Foreground(p.Muted).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Border).
+			BorderTop(false).
 			Padding(0, 1),
 		StatusKey: lipgloss.NewStyle().Bold(true).Foreground(p.Primary),
 		StatusVal: lipgloss.NewStyle().Foreground(p.Muted),
