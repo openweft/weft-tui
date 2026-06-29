@@ -414,18 +414,24 @@ func TestRefreshKeyOnHosts(t *testing.T) {
 }
 
 func TestRefreshErrorSurfaces(t *testing.T) {
+	// Refresh errors now land in the Logs pane (operator directive
+	// 2026-06-29 : "le message n'a rien a faire en bas") instead of
+	// the status bar. Verify the log buffer captured the failure.
 	want := errors.New("boom")
 	client := &fakeClient{listHostsErr: want}
 	m := New(client)
 
 	next, _ := m.Update(hostsLoadedMsg{err: want})
 	m = next.(Model)
-	gotMsg, gotErr := m.StatusMessage()
-	if !gotErr {
-		t.Errorf("statusErr = false, want true")
+	// Status bar must stay clean — refresh errors don't belong there.
+	if _, gotErr := m.StatusMessage(); gotErr {
+		t.Errorf("status bar showed an error ; refresh errors should go to the log pane")
 	}
-	if gotMsg == "" {
-		t.Errorf("statusMsg empty, want error text")
+	// The log pane should now hold one ERROR entry referencing the
+	// failure. logPane.entries is internal but the pane retains
+	// every appended record ; assert at least one is present.
+	if len(m.logPane.entries) == 0 {
+		t.Errorf("log pane is empty ; expected the refresh error to be captured there")
 	}
 }
 
