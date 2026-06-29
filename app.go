@@ -877,6 +877,19 @@ func (m Model) forwardToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tabEvents:
 		m.events.vp, cmd = m.events.vp.Update(msg)
+	case tabResource:
+		// Form-submit Cmds (createSubmitMsg / editSubmitMsg /
+		// actionFormSubmitMsg) and other animation / refresh msgs
+		// produced by the active ResourceListModel come back
+		// through the top-level Model.Update. Without this branch
+		// they fell through to the unhandled default and got
+		// dropped — Enter on a form looked dead because the
+		// submit msg never reached the resource model.
+		// Operator-reported 2026-06-29 : "la touche entrée ne
+		// semble pas valider le formulaire".
+		if rm, ok := m.resource[m.currentResource]; ok && rm != nil {
+			_, cmd = rm.Update(msg)
+		}
 	}
 	return m, cmd
 }
