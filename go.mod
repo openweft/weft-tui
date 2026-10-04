@@ -1,6 +1,6 @@
 module github.com/openweft/weft-tui
 
-go 1.26
+go 1.27.1
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
