@@ -1,6 +1,6 @@
 module github.com/openweft/weft-tui
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -10,8 +10,8 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/openweft/weft-client v0.2.2
 	github.com/openweft/weft-proto v0.21.0
-	golang.org/x/crypto v0.50.0
-	google.golang.org/grpc v1.81.1
+	golang.org/x/crypto v0.57.0
+	google.golang.org/grpc v1.84.0
 )
 
 require (
@@ -43,14 +43,14 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zclconf/go-cty v1.18.1 // indirect
-	golang.org/x/mod v0.34.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
-	golang.org/x/tools v0.43.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
